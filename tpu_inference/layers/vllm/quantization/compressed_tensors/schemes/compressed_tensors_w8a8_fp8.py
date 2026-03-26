@@ -132,7 +132,11 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
                 weight, weight_scale = quantize_tensor(jnp.float8_e4m3fn,
                                                        weight, None)
             else:
-                weight_scale = jnp.squeeze(weight_scale, -1)
+                if weight_scale.ndim == 2:
+                    if weight_scale.shape[0] == 1:
+                        weight_scale = weight_scale[0]
+                    elif weight_scale.shape[1] == 1:
+                        weight_scale = weight_scale[:, 0]
 
             return process_linear_weights(
                 LinearWeights(
