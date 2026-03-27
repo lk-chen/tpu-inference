@@ -114,6 +114,11 @@ class VllmMLAAttention(MLAAttention):
             kv_b_proj_params = dict(self.kv_b_proj.named_parameters())
             for key in kv_b_proj_params.keys():
                 delattr(self.kv_b_proj, key)
+            
+            # Force JAX to execute graph to free any intermediate allocations 
+            # (e.g., dequantized dense KV cache weights) before processing next layer.
+            import jax
+            jax.block_until_ready(jax_view(self.W_UK_T))
 
     def forward(self,
                 q: tuple[torch.Tensor, torch.Tensor],
