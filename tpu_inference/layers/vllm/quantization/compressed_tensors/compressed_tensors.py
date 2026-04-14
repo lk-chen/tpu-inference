@@ -36,6 +36,8 @@ from tpu_inference.layers.vllm.quantization.compressed_tensors.schemes.compresse
     VllmCompressedTensorsW4A8Fp8
 from tpu_inference.layers.vllm.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8 import \
     VllmCompressedTensorsW8A8Fp8
+from tpu_inference.layers.vllm.quantization.compressed_tensors.schemes.compressed_tensors_w4a16_fp4 import \
+    VllmCompressedTensorsW4A16Fp4
 from tpu_inference.layers.vllm.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_int8 import \
     VllmCompressedTensorsW8A8Int8
 from tpu_inference.layers.vllm.quantization.configs import VllmQuantConfig
@@ -94,7 +96,6 @@ class VllmCompressedTensorsConfig(CompressedTensorsConfig, VllmQuantConfig):
         # TODO(kyuyeunk): Add support for different act_quant_format
 
         linear_config = self.get_linear_config(layer)
-
         if self._is_fp8_w4a8(weight_quant, input_quant):
             # TODO(dmolitor): Handle unpacked weights or propagate a guard here based on the quantization config format.
             return VllmCompressedTensorsW4A8Fp8(
@@ -103,6 +104,11 @@ class VllmCompressedTensorsConfig(CompressedTensorsConfig, VllmQuantConfig):
                 linear_config=linear_config,
             )
 
+        if self._is_nvfp4_format(weight_quant):
+            # We explicitly ignore input_quant (W4A4) and fallback to W4A16
+            return VllmCompressedTensorsW4A16Fp4(
+                linear_config=linear_config,
+            )
         if self._is_fp8_w8a8(weight_quant, input_quant):
             is_static_input_scheme = input_quant and not input_quant.dynamic
             return VllmCompressedTensorsW8A8Fp8(
