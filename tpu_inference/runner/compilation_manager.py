@@ -149,7 +149,7 @@ class CompilationManager:
 
             self._run_compilation(
                 "input_embeddings_merger",
-                functools.partial(self.runner.embed_input_ids_fn, is_multimodal=dummy_is_multimodal),
+                self.runner.embed_input_ids_fn,
                 self.runner.state,
                 dummy_input_ids,
                 dummy_multimodal_embeddings,
@@ -159,7 +159,7 @@ class CompilationManager:
 
             self._run_compilation(
                 "input_embeddings_merger_text_only",
-                functools.partial(self.runner.embed_input_ids_fn, is_multimodal=dummy_is_multimodal),
+                self.runner.embed_input_ids_fn,
                 self.runner.state,
                 dummy_input_ids,
                 None,
