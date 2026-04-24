@@ -29,7 +29,7 @@ import vllm.envs as vllm_envs
 from flax.typing import PRNGKey
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from torchax.interop import jax_view, torch_view
-from torchax.ops.mappings import TORCH_DTYPE_TO_JAX, t2j
+from torchax.ops.mappings import TORCH_DTYPE_TO_JAX
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.forward_context import set_forward_context
 from vllm.ir import enable_torch_wrap
@@ -109,6 +109,49 @@ class _VllmRunner(torch.nn.Module):
 
     def compute_logits(self, hidden_state: torch.Tensor) -> torch.Tensor:
         return self.vllm_model.compute_logits(hidden_state)
+
+
+class GridTHW(tuple):
+    """Tensor-like wrapper for image/video grid_thw arguments.
+
+    - tuple subclass so isinstance(x, tuple) is True — passes vLLM's
+    tensor_schema type check (e.g. https://github.com/vllm-project/vllm/blob/9744b699bafed423909ed10da96b80eb0542424b/vllm/model_executor/models/qwen3_vl.py#L2026). 
+    - Implements a minimal tensor-like API (ndim, shape, tolist, prod) expected by vLLM's
+    _process_image_input (https://github.com/vllm-project/vllm/blob/9744b699bafed423909ed10da96b80eb0542424b/vllm/model_executor/models/qwen3_vl.py#L2072)
+
+    We cannot use torch.Tensor[tuple] because jax.jit would complain.
+    """
+
+    def __new__(cls, values):
+
+        def _nested_to_tuple(v):
+            if isinstance(v, (list, tuple)):
+                return tuple(_nested_to_tuple(x) for x in v)
+            return int(v)
+
+        flat: tuple = _nested_to_tuple(values)
+        return super().__new__(cls, flat)
+
+    # ---- tensor-like API expected by _process_image_input ----
+
+    @property
+    def ndim(self):
+        return 2
+
+    @property
+    def shape(self):
+        return (len(self), 3)
+
+    def tolist(self):
+        return [list(row) for row in self]
+
+    def prod(self, dim=-1):
+        if dim in (-1, 1):
+            return np.array([row[0] * row[1] * row[2] for row in self])
+        raise NotImplementedError(f"GridTHW.prod({dim}) not supported")
+
+    def __repr__(self):
+        return f"GridTHW({tuple(self)})"
 
 
 class VllmModelWrapper:
