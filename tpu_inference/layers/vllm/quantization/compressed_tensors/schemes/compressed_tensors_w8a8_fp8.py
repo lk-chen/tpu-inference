@@ -176,7 +176,6 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
                         jnp.transpose(weights.weight_scale),
                         axis=1,
                     )
-                    print(f"DEBUG: compressed_tensors scale shape: {weights.weight_scale.shape}")
                 else:
                     weights.weight_scale = jnp.expand_dims(
                         jnp.transpose(weights.weight_scale),
