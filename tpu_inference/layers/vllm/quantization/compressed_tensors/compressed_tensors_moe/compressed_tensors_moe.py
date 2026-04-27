@@ -63,14 +63,6 @@ class VllmCompressedTensorsMoEMethod(CompressedTensorsMoEMethod):
         weight_quant = scheme_dict.get("weights")
         input_quant = scheme_dict.get("input_activations")
 
-        if quant_config._is_nvfp4_format(weight_quant):
-            return VllmCompressedTensorsW4A16Fp4MoEMethod(
-                weight_quant=weight_quant,
-                input_quant=input_quant,
-                moe=layer.moe_config,
-                mesh=quant_config.mesh
-            )
-
         if quant_config._is_fp8_w8a8(weight_quant, input_quant):
             return VllmCompressedTensorsW8A8Fp8MoEMethod(
                 weight_quant, input_quant, layer.moe_config, quant_config.mesh)
