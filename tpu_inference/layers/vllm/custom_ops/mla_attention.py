@@ -82,7 +82,9 @@ class VllmMLAAttention(MLAAttention):
             elif hasattr(self.kv_b_proj.quant_method, "linear_config"):
                 mesh = self.kv_b_proj.quant_method.linear_config.mesh
             else:
-                raise ValueError(f"Cannot find linear_config for kv_b_proj {self.kv_b_proj}")
+                raise ValueError(
+                    f"Cannot find linear_config for kv_b_proj {self.kv_b_proj}"
+                )
 
             sharding = NamedSharding(mesh, P(ShardingAxisName.ATTN_HEAD, ))
             self.W_UK_T, self.W_UK_T_scale = quantize_tensor(

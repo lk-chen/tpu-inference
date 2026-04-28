@@ -14,6 +14,7 @@
 """Generic TPU patches to ensure compatibility."""
 
 import torch
+
 from tpu_inference.logger import init_logger
 
 logger = init_logger(__name__)
@@ -36,14 +37,15 @@ def _patch_rms_norm():
 
             def _patched_rms_norm_forward_native(self, x, residual=None):
                 weight_param = None
-                if getattr(self, "has_weight", True) and hasattr(self, "weight"):
+                if getattr(self, "has_weight", True) and hasattr(
+                        self, "weight"):
                     w = self.weight
                     if isinstance(w, torch.nn.Parameter):
                         w = w.data
-                    
+
                     if type(w) is torch.Tensor:
                         w = w.to(device="jax")
-                        
+
                     weight_param = w
 
                 return self.forward_static(
@@ -69,16 +71,15 @@ def _patch_default_unquantized_gemm():
 
         if not hasattr(vllm_layer_utils, "_original_default_unquantized_gemm"):
             vllm_layer_utils._original_default_unquantized_gemm = (
-                vllm_layer_utils.default_unquantized_gemm
-            )
+                vllm_layer_utils.default_unquantized_gemm)
 
             def _patched_default_unquantized_gemm(layer, x, weight, bias=None):
                 if isinstance(weight, torch.nn.Parameter):
                     weight = weight.data
-                
+
                 if type(weight) is torch.Tensor:
                     weight = weight.to(device="jax")
-                
+
                 if bias is not None:
                     if isinstance(bias, torch.nn.Parameter):
                         bias = bias.data

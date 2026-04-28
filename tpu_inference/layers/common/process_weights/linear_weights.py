@@ -114,7 +114,8 @@ def process_linear_weights(
 
         if weight_scale is not None and not per_tensor:
             weight_scale = reorder_concatenated_tensor_for_sharding(
-                weight_scale, get_scaled_sizes(weight_scale), reorder_size, dim)
+                weight_scale, get_scaled_sizes(weight_scale), reorder_size,
+                dim)
         if zero_point is not None:
             zero_point = reorder_concatenated_tensor_for_sharding(
                 zero_point, get_scaled_sizes(zero_point), reorder_size, dim)
