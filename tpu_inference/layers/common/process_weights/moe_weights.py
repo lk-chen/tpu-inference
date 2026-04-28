@@ -180,12 +180,12 @@ def process_w13_for_gmm(tensor,
     # 2. Pad the intermediate dimension
     def _pad_tensor(t):
         dims = t.shape[:-1]
-        
+
         # If the last dimension doesn't match the expected intermediate_size
         # (e.g. for blockwise scales where the last dim is block_size/K), skip padding
         if t.shape[-1] != config.local_intermediate_size:
             return t
-            
+
         # Reshape to expose local_intermediate_size
         t = t.reshape(*dims, config.w13_reorder_size,
                       config.local_intermediate_size)
@@ -279,7 +279,9 @@ def process_moe_weights(
             size_n = w13_weight.shape[2]
             num_blocks_n = w13_weight_scale.shape[1]
             block_size_n = size_n // num_blocks_n
-            w13_weight_scale = jnp.repeat(w13_weight_scale, block_size_n, axis=1)
+            w13_weight_scale = jnp.repeat(w13_weight_scale,
+                                          block_size_n,
+                                          axis=1)
             w13_weight_scale = jnp.swapaxes(w13_weight_scale, 1, 2)
             w13_weight_scale = jnp.expand_dims(w13_weight_scale, 2)
         else:
@@ -593,7 +595,8 @@ def process_fp8_moe_weights(
         desired_quant_dtype,
         requant_block_size,
     )
-    jax.debug.print("[Execution] Starting process_moe_weights (reordering/padding)")
+    jax.debug.print(
+        "[Execution] Starting process_moe_weights (reordering/padding)")
     return process_moe_weights(
         weights,
         moe_backend=moe_backend,

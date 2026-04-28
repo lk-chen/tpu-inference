@@ -17,12 +17,12 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import torch
+import vllm.model_executor.kernels.linear as vllm_linear
 from compressed_tensors.quantization import (QuantizationArgs,
                                              QuantizationStrategy)
 from jax.sharding import NamedSharding, PartitionSpec
 from torch.nn.parameter import Parameter
 from torchax.interop import jax_view, torch_view
-import vllm.model_executor.kernels.linear as vllm_linear
 from vllm.model_executor.kernels.linear import (FP8ScaledMMLinearKernel,
                                                 register_linear_kernel)
 from vllm.model_executor.kernels.linear.scaled_mm import \
@@ -37,7 +37,8 @@ from tpu_inference.layers.common.process_weights.linear_weights import (
     to_parameter_list)
 from tpu_inference.layers.common.quantization import (dequantize_tensor,
                                                       quantize_tensor)
-from tpu_inference.layers.common.quantization.fp8 import process_blockwise_fp8_linear_weights
+from tpu_inference.layers.common.quantization.fp8 import \
+    process_blockwise_fp8_linear_weights
 from tpu_inference.layers.common.utils import \
     slice_sharded_tensor_for_concatenation
 from tpu_inference.layers.vllm.quantization.configs import \
@@ -82,8 +83,10 @@ register_linear_kernel(TpuFP8ScaledMMLinearKernel, PlatformEnum.TPU, "fp8")
 if hasattr(vllm_linear, "_POSSIBLE_FP8_BLOCK_KERNELS"):
     if PlatformEnum.TPU not in vllm_linear._POSSIBLE_FP8_BLOCK_KERNELS:
         vllm_linear._POSSIBLE_FP8_BLOCK_KERNELS[PlatformEnum.TPU] = []
-    if TpuFP8ScaledMMLinearKernel not in vllm_linear._POSSIBLE_FP8_BLOCK_KERNELS[PlatformEnum.TPU]:
-        vllm_linear._POSSIBLE_FP8_BLOCK_KERNELS[PlatformEnum.TPU].append(TpuFP8ScaledMMLinearKernel)
+    if TpuFP8ScaledMMLinearKernel not in vllm_linear._POSSIBLE_FP8_BLOCK_KERNELS[
+            PlatformEnum.TPU]:
+        vllm_linear._POSSIBLE_FP8_BLOCK_KERNELS[PlatformEnum.TPU].append(
+            TpuFP8ScaledMMLinearKernel)
 
 
 class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
@@ -173,7 +176,8 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
             weights = process_fp8_linear_weights(weight, weight_scale, bias)
 
         if self.linear_config.enable_quantized_matmul_kernel and weights.weight_scale.ndim == 2:
-            if weights.weight_scale.shape[0] > 1 and weights.weight_scale.shape[1] > 1:
+            if weights.weight_scale.shape[
+                    0] > 1 and weights.weight_scale.shape[1] > 1:
                 # The quantized_matmul_kernel expects weight scales shaped (n_blocks, 1, n_out_features) for blockwisze quantization.
                 if self.weight_block_size is not None:
                     # process_blockwise_fp8_linear_weights returns weight_scale shaped (n_out_features, n_blocks)
@@ -237,10 +241,12 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
         weight_scale_jax = jax_view(layer.weight_scale)
 
         if weight_scale_jax.ndim == 2:
-          num_blocks_n, num_blocks_k = weight_scale_jax.shape
-          out_features = weight_jax.shape[0]
-          block_size_n = out_features // num_blocks_n # e.g., 128
-          weight_scale_jax = jnp.repeat(weight_scale_jax, block_size_n, axis=0).T[:, None, :]
+            num_blocks_n, num_blocks_k = weight_scale_jax.shape
+            out_features = weight_jax.shape[0]
+            block_size_n = out_features // num_blocks_n  # e.g., 128
+            weight_scale_jax = jnp.repeat(weight_scale_jax,
+                                          block_size_n,
+                                          axis=0).T[:, None, :]
 
         if self.is_static_input_scheme:
             # TODO(kyuyeunk): Add kernel support for static quant

@@ -87,22 +87,24 @@ def patch_mm_model(
                 input_dtype = inputs_embeds.dtype
                 mm_embeds_flat = mm_embeds_flat.to(dtype=input_dtype)
 
-                # PyTorch boolean indexing (inputs[mask] = values) requires dynamic 
-                # host-synchronization. We use static math ops (cumsum, where) 
+                # PyTorch boolean indexing (inputs[mask] = values) requires dynamic
+                # host-synchronization. We use static math ops (cumsum, where)
                 # which trace perfectly via torchax into JAX without deadlocking.
-                
+
                 # Create a dummy row to handle indices for non-multimodal tokens.
                 dummy_row = torch.zeros_like(mm_embeds_flat[0:1])
                 # Prepend the dummy row.
-                flattened_padded = torch.cat([dummy_row, mm_embeds_flat], dim=0)
+                flattened_padded = torch.cat([dummy_row, mm_embeds_flat],
+                                             dim=0)
 
-                # For non-multimodal tokens, cumsum points to 0. 
+                # For non-multimodal tokens, cumsum points to 0.
                 # For multimodal tokens, it points to their 1-based index in the padded array.
                 gather_indices = is_multimodal.to(torch.int64).cumsum(dim=0)
                 update_values = flattened_padded[gather_indices]
 
                 condition = is_multimodal.unsqueeze(-1)
-                new_embeds = torch.where(condition, update_values, inputs_embeds)
+                new_embeds = torch.where(condition, update_values,
+                                         inputs_embeds)
 
                 return new_embeds
 
