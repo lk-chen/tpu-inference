@@ -623,7 +623,8 @@ class TPUOffloadConnectorScheduler():
         logger.debug(f"Checking for cache hit: {request.request_id},"
                      f"total_token_len: {request.num_tokens}, "
                      f"block_hashes ({num_total_blocks}), "
-                     f"already computed tokens: {num_computed_tokens}. ")
+                     f"already computed tokens: {num_computed_tokens}, "
+                     f"tokens: {request.prompt_token_ids}. ")
 
         # look for blocks in the cache
         num_hits = self.offload_manager.lookup(block_hashes)

@@ -54,7 +54,7 @@ steps:
     depends_on: tpu7x_build_docker
     soft_fail: true
     env:
-      VLLM_LOG_LEVEL: "INFO"
+      VLLM_LOGGING_LEVEL: "DEBUG"
     agents:
       queue: tpu_v6e_8_queue
     commands:
