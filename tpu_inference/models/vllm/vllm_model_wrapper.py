@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import copy
-import functools
 import time
 from collections.abc import Sequence
 from contextlib import nullcontext
