@@ -113,7 +113,6 @@ class TestTPUOffloadConnectorWorker(jtu.JaxTestCase):
             del self.connector
 
         # Force JAX to release memory
-        cc.reset_cache()
         jax.clear_caches()
 
         # Force Python GC

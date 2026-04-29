@@ -87,22 +87,60 @@ else
   exit 1
 fi
 
-# Some test scripts set tp=2 on TPU_VERSION=tpu7x to mitigate test failures.
-# TODO (Qiliang Cui) Investigate why tensor-parallel-size=1 breaks in tpu7x.
+# Try to cache the JAX compilations.
+GCS_CACHE_BASE="gs://ullm-ci-cache/jax_cache"
+echo "[INFO] Probing JAX version from docker image..."
+JAX_VERSION=$(docker run --rm "$FULL_IMAGE_TAG" python3 -c "import jax; print(jax.__version__)")
+echo "[INFO] Detected JAX Version: ${JAX_VERSION}"
 
-exec docker run \
+# Centralized GCS cache path
+CACHE_NAMESPACE="jax${JAX_VERSION}_tpu${TPU_VERSION:-unknown}"
+FINAL_CACHE_PATH="${GCS_CACHE_BASE}/${CACHE_NAMESPACE}"
+
+LOCAL_JAX_CACHE_DIR="/tmp/tpu_jax_cache/${CACHE_NAMESPACE}"
+mkdir -p "$LOCAL_JAX_CACHE_DIR"
+echo "[INFO] Pulling JAX Cache from GCS to local directory..."
+gsutil -m rsync -r "$FINAL_CACHE_PATH" "$LOCAL_JAX_CACHE_DIR" || true
+
+# ==========================================
+# 2. XLA Dump Toggle Logic
+# ==========================================
+DUMP_VOL_ARGS=()
+DUMP_ENV_ARGS=()
+LOCAL_XLA_DUMP_DIR="$(pwd)/xla_dump"
+
+if [[ "${ENABLE_XLA_DUMP:-0}" == "1" ]]; then
+  echo "[INFO] XLA Dump is ENABLED. Logs will be saved to ${LOCAL_XLA_DUMP_DIR}"
+  mkdir -p "$LOCAL_XLA_DUMP_DIR"
+  DUMP_VOL_ARGS=( -v "${LOCAL_XLA_DUMP_DIR}:/tmp/xla_dump" )
+  DUMP_ENV_ARGS=( -e XLA_FLAGS="--xla_dump_to=/tmp/xla_dump --xla_dump_hlo_as_text" )
+fi
+
+# ==========================================
+# 3. Run Docker Container
+# ==========================================
+set +e # Temporarily disable exit on error to capture exit code
+
+# Use LOCAL_JAX_CACHE_DIR for cache
+docker run \
   --privileged \
   --net host \
   --shm-size=16G \
   --rm \
   -v "$LOCAL_HF_HOME":"$DOCKER_HF_HOME" \
+  -v "$LOCAL_JAX_CACHE_DIR":"$LOCAL_JAX_CACHE_DIR" \
+  "${DUMP_VOL_ARGS[@]}" \
   "${ENV_VARS[@]}" \
   "${TEST_SUITE_VARS[@]}" \
   -e HF_HOME="$DOCKER_HF_HOME" \
   -e MODEL_IMPL_TYPE="$MODEL_IMPL_TYPE" \
   -e HF_TOKEN="$HF_TOKEN" \
-  -e VLLM_XLA_CACHE_PATH="$DOCKER_HF_HOME/.cache/jax_cache" \
+  -e VLLM_XLA_CACHE_PATH="$LOCAL_JAX_CACHE_DIR" \
   -e VLLM_XLA_CHECK_RECOMPILATION=1 \
+  -e JAX_LOG_COMPILES=1 \
+  -e PYTHONHASHSEED=0 \
+  -e JAX_COMPILATION_CACHE_DIR="$LOCAL_JAX_CACHE_DIR" \
+  "${DUMP_ENV_ARGS[@]}" \
   ${QUANTIZATION:+-e QUANTIZATION="$QUANTIZATION"} \
   ${NEW_MODEL_DESIGN:+-e NEW_MODEL_DESIGN="$NEW_MODEL_DESIGN"} \
   ${USE_V6E8_QUEUE:+-e USE_V6E8_QUEUE="$USE_V6E8_QUEUE"} \
@@ -111,4 +149,23 @@ exec docker run \
   ${VLLM_MLA_DISABLE:+-e VLLM_MLA_DISABLE="$VLLM_MLA_DISABLE"} \
   "${BENCHMARK_DOCKER_ARGS[@]}" \
   "$FULL_IMAGE_TAG" \
-  "$@" # Pass all script arguments as the command to run in the container
+  "$@" 
+DOCKER_EXIT_CODE=$?
+
+set -e
+
+# ==========================================
+# 4. Post-Docker Actions
+# ==========================================
+echo "[INFO] Docker finished with exit code ${DOCKER_EXIT_CODE}."
+
+# upload artifacts if ENABLE_XLA_DUMP
+if [[ "${ENABLE_XLA_DUMP:-0}" == "1" ]] && command -v buildkite-agent &> /dev/null; then
+    echo "[INFO] Uploading XLA dumps to BuildKite Artifacts..."
+    buildkite-agent artifact upload "${LOCAL_XLA_DUMP_DIR}/**/*" || echo "[WARNING] Artifact upload failed."
+fi
+
+echo "[INFO] Syncing local JAX Cache back to GCS..."
+gsutil -m rsync -r "$LOCAL_JAX_CACHE_DIR" "$FINAL_CACHE_PATH" || true
+
+exit $DOCKER_EXIT_CODE

@@ -88,7 +88,6 @@ class KVTransferTest(jtu.JaxTestCase):
 
     def tearDown(self):
         super().tearDown()
-        cc.reset_cache()
         jax.clear_caches()
 
         # Force Python GC

@@ -160,10 +160,10 @@ upload_pipeline() {
       upload_with_priority .buildkite/pipeline_jax.yml "$JOB_PRIORITY"
       set_jax_envs unset
 
-      # Upload JAX pipeline for v7
-      set_jax_envs v7
-      upload_with_priority .buildkite/pipeline_jax.yml "$JOB_PRIORITY"
-      set_jax_envs unset
+      # # Upload JAX pipeline for v7
+      # set_jax_envs v7
+      # upload_with_priority .buildkite/pipeline_jax.yml "$JOB_PRIORITY"
+      # set_jax_envs unset
 
       # buildkite-agent pipeline upload .buildkite/pipeline_torch.yml
       upload_with_priority .buildkite/nightly_releases.yml "$JOB_PRIORITY"
@@ -218,10 +218,10 @@ if [[ $BUILDKITE_PIPELINE_SLUG == "tpu-vllm-integration" ]]; then
     # Note: upload are inserted in reverse order, so promote LKG should upload before tests
     upload_with_priority .buildkite/integration_promote.yml "$JOB_PRIORITY"
   
-    # Upload JAX pipeline for v7
-    set_jax_envs v7
-    upload_with_priority .buildkite/pipeline_jax.yml "$JOB_PRIORITY"
-    set_jax_envs unset
+    # # Upload JAX pipeline for v7
+    # set_jax_envs v7
+    # upload_with_priority .buildkite/pipeline_jax.yml "$JOB_PRIORITY"
+    # set_jax_envs unset
 
     # Upload JAX pipeline for v6 (default)
     set_jax_envs v6
