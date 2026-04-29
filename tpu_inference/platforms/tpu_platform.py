@@ -219,19 +219,6 @@ class TpuPlatform(Platform):
         if compilation_config.backend == "":
             compilation_config.backend = "openxla"
 
-        # Dump all keys from text_config to hf_config if they don't exist
-        hf_config = vllm_config.model_config.hf_config
-        text_config = getattr(hf_config, "text_config", None)
-        if text_config:
-            config_dict = text_config if isinstance(
-                text_config, dict) else getattr(text_config, "to_dict",
-                                                lambda: {})()
-            for key, value in config_dict.items():
-                if not hasattr(hf_config, key):
-                    setattr(hf_config, key, value)
-                    logger.debug(
-                        f"Copying {key} from text_config to hf_config")
-
         cache_config = vllm_config.cache_config
         # For v0, the default block size is 16.
         if cache_config and not cache_config.user_specified_block_size:
