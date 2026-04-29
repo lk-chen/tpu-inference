@@ -56,7 +56,7 @@ steps:
     env:
       VLLM_LOG_LEVEL: "INFO"
     agents:
-      queue: tpu_v7x_8_queue
+      queue: tpu_v6e_8_queue
     commands:
       - |
         .buildkite/scripts/run_in_docker.sh \
