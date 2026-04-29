@@ -21,8 +21,6 @@ from tpu_inference.layers.vllm.quantization.compressed_tensors.compressed_tensor
     VllmCompressedTensorsW8A8Fp8MoEMethod
 from tpu_inference.layers.vllm.quantization.unquantized import \
     VllmUnquantizedFusedMoEMethod
-from tpu_inference.layers.vllm.quantization.compressed_tensors.schemes.compressed_tensors_w4a16_fp4 import \
-    VllmCompressedTensorsW4A16Fp4MoEMethod
 from tpu_inference.logger import init_logger
 
 logger = init_logger(__name__)
