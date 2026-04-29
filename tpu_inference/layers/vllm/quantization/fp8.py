@@ -145,12 +145,12 @@ class VllmFp8LinearMethod(vllm_fp8.Fp8LinearMethod,
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         assert isinstance(layer, vllm_linear.LinearBase)
 
-        assert self.block_quant
         weight = t2j(layer.weight, use_dlpack=False)
         delattr(layer, "weight")
 
-        weight_scale = t2j(layer.weight_scale_inv, use_dlpack=False)
-        delattr(layer, "weight_scale_inv")
+        scale_name = "weight_scale_inv" if self.block_quant else "weight_scale"
+        weight_scale = t2j(getattr(layer, scale_name), use_dlpack=False)
+        delattr(layer, scale_name)
 
         if layer.bias is not None and not layer.skip_bias_add:
             if layer.return_bias:
@@ -160,17 +160,43 @@ class VllmFp8LinearMethod(vllm_fp8.Fp8LinearMethod,
         else:
             bias = None
 
-        weights = common_fp8.process_blockwise_fp8_linear_weights(
-            weight,
-            weight_scale,
-            bias=bias,
-            weight_block_size=tuple(self.weight_block_size),
-            requant_block_size=self.linear_config.requant_block_size,
-            output_sizes=tuple(self.linear_config.output_sizes),
-            requant_weight_dtype=self.linear_config.requant_weight_dtype,
-            fuse_matmuls=self.linear_config.fuse_matmuls,
-            n_shards=self.linear_config.n_shards)
-        if self.linear_config.enable_quantized_matmul_kernel:
+        if not self.block_quant and weight_scale.ndim == 1 and weight_scale.shape[
+                0] > 1:
+            # Repeat scales to match output segments for fused layers.
+            # vLLM provides one scale per fused part in the checkpoint.
+            scales = []
+            for i, size in enumerate(self.linear_config.output_sizes):
+                scales.append(jnp.full((size, ), weight_scale[i]))
+            weight_scale = jnp.concatenate(scales)
+
+        if self.block_quant:
+            weights = common_fp8.process_blockwise_fp8_linear_weights(
+                weight,
+                weight_scale,
+                bias=bias,
+                weight_block_size=tuple(self.weight_block_size),
+                requant_block_size=self.linear_config.requant_block_size,
+                output_sizes=tuple(self.linear_config.output_sizes),
+                requant_weight_dtype=self.linear_config.requant_weight_dtype,
+                fuse_matmuls=self.linear_config.fuse_matmuls,
+                n_shards=self.linear_config.n_shards)
+        else:
+            from tpu_inference.layers.common.process_weights.linear_weights import (
+                LinearWeights, process_linear_weights)
+            weights = process_linear_weights(
+                LinearWeights(
+                    weight=weight,
+                    weight_scale=weight_scale,
+                    zero_point=None,
+                    bias=bias,
+                ),
+                fused=self.linear_config.fuse_matmuls,
+                output_sizes=list(self.linear_config.output_sizes),
+                reorder_size=self.linear_config.n_shards,
+                per_tensor=True,
+            )
+
+        if self.block_quant and self.linear_config.enable_quantized_matmul_kernel:
             # The quantized_matmul_kernel expects weight scales shaped (n_out_features, 1, n_blocks) for blockwisze quantization.
             weights.weight_scale = jnp.expand_dims(
                 jnp.transpose(weights.weight_scale),
@@ -182,17 +208,18 @@ class VllmFp8LinearMethod(vllm_fp8.Fp8LinearMethod,
                 mesh=self.linear_config.mesh,
                 weight_p_spec=self.linear_config.weight_sharding,
                 bias_p_spec=self.linear_config.bias_sharding,
+                per_tensor=not self.block_quant,
             ))
 
         if self.linear_config.fuse_matmuls:
             layer.weight = Parameter(weights.weight, requires_grad=False)
-            layer.weight_scale = Parameter(weights.weight_scale,
-                                           requires_grad=False)
+            setattr(layer, scale_name,
+                    Parameter(weights.weight_scale, requires_grad=False))
             if bias is not None:
                 layer.bias = Parameter(weights.bias, requires_grad=False)
         else:
             layer.weight = to_parameter_list(weights.weight)
-            layer.weight_scale = to_parameter_list(weights.weight_scale)
+            setattr(layer, scale_name, to_parameter_list(weights.weight_scale))
             if bias is not None:
                 layer.bias = to_parameter_list(weights.bias)
 
@@ -200,23 +227,25 @@ class VllmFp8LinearMethod(vllm_fp8.Fp8LinearMethod,
               layer: torch.nn.Module,
               x: torch.Tensor,
               bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+        scale_name = "weight_scale_inv" if self.block_quant else "weight_scale"
         with jax.named_scope(layer._get_name()):
             x_jax = jax_view(x)
             bias_jax = jax_view(
                 bias) if bias is not None and not layer.skip_bias_add else None
             if self.linear_config.fuse_matmuls:
                 weight_jax = jax_view(layer.weight)
-                weight_scale_jax = jax_view(layer.weight_scale)
+                weight_scale_jax = jax_view(getattr(layer, scale_name))
                 out = self._apply_fused(x_jax, weight_jax, weight_scale_jax,
                                         bias_jax)
             else:
                 assert isinstance(layer.weight, torch.nn.ParameterList)
-                assert isinstance(layer.weight_scale, torch.nn.ParameterList)
+                layer_weight_scale = getattr(layer, scale_name)
+                assert isinstance(layer_weight_scale, torch.nn.ParameterList)
                 # jax_view cannot handle ParameterList directly, so we explicitly
                 # convert them to list of jax.Array.
                 weight_and_scale = [
                     (jax_view(w), jax_view(s))
-                    for w, s in zip(layer.weight, layer.weight_scale)
+                    for w, s in zip(layer.weight, layer_weight_scale)
                 ]
                 if bias is not None and not layer.skip_bias_add:
                     assert isinstance(bias, torch.nn.ParameterList)
@@ -257,14 +286,31 @@ class VllmFp8MoEMethod(vllm_fp8.Fp8MoEMethod):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         assert isinstance(layer, FusedMoE)
 
-        assert self.block_quant
         assert not self.moe.has_bias
 
         w13_weight = t2j(layer.w13_weight, use_dlpack=False)
-        w13_weight_scale = t2j(layer.w13_weight_scale_inv, use_dlpack=False)
+        w13_scale_name = "w13_weight_scale_inv" if self.block_quant else "w13_weight_scale"
+        w13_weight_scale = t2j(getattr(layer, w13_scale_name),
+                               use_dlpack=False)
 
         w2_weight = t2j(layer.w2_weight, use_dlpack=False)
-        w2_weight_scale = t2j(layer.w2_weight_scale_inv, use_dlpack=False)
+        w2_scale_name = "w2_weight_scale_inv" if self.block_quant else "w2_weight_scale"
+        w2_weight_scale = t2j(getattr(layer, w2_scale_name), use_dlpack=False)
+
+        if not self.block_quant:
+            if w13_weight_scale.ndim == 2:
+                # w13_weight_scale has shape (num_experts, 2), corresponding to w1 and w3.
+                # We need to expand it to match the out_dim of w13_weight (which is num_experts, in_dim, out_dim).
+                chunk_size = w13_weight.shape[-1] // w13_weight_scale.shape[-1]
+                w13_weight_scale = jnp.repeat(w13_weight_scale,
+                                              chunk_size,
+                                              axis=-1)
+
+            if w2_weight_scale.ndim == 2:
+                chunk_size = w2_weight.shape[-1] // w2_weight_scale.shape[-1]
+                w2_weight_scale = jnp.repeat(w2_weight_scale,
+                                             chunk_size,
+                                             axis=-1)
 
         # TODO: do we need to support bias?
         input_weights = FusedMoEWeights(
@@ -294,10 +340,10 @@ class VllmFp8MoEMethod(vllm_fp8.Fp8MoEMethod):
         layer.w13_weight = Parameter(weights.w13_weight, requires_grad=False)
         layer.w2_weight = Parameter(weights.w2_weight, requires_grad=False)
 
-        layer.w13_weight_scale_inv = Parameter(weights.w13_weight_scale,
-                                               requires_grad=False)
-        layer.w2_weight_scale_inv = Parameter(weights.w2_weight_scale,
-                                              requires_grad=False)
+        setattr(layer, w13_scale_name,
+                Parameter(weights.w13_weight_scale, requires_grad=False))
+        setattr(layer, w2_scale_name,
+                Parameter(weights.w2_weight_scale, requires_grad=False))
 
     def apply_monolithic(
         self,
@@ -307,12 +353,15 @@ class VllmFp8MoEMethod(vllm_fp8.Fp8MoEMethod):
         input_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
 
+        w13_scale_name = "w13_weight_scale_inv" if self.block_quant else "w13_weight_scale"
+        w2_scale_name = "w2_weight_scale_inv" if self.block_quant else "w2_weight_scale"
+
         weights = FusedMoEWeights(
             w13_weight=jax_view(layer.w13_weight),
-            w13_weight_scale=jax_view(layer.w13_weight_scale_inv),
+            w13_weight_scale=jax_view(getattr(layer, w13_scale_name)),
             w13_bias=jax_view(layer.w13_bias) if self.moe.has_bias else None,
             w2_weight=jax_view(layer.w2_weight),
-            w2_weight_scale=jax_view(layer.w2_weight_scale_inv),
+            w2_weight_scale=jax_view(getattr(layer, w2_scale_name)),
             w2_bias=jax_view(layer.w2_bias) if self.moe.has_bias else None,
         )
         return vllm_moe_apply(layer=layer,

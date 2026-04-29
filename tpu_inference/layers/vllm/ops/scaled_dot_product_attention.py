@@ -39,6 +39,10 @@ def scaled_dot_product_attention(
     if enable_gqa is not False:
         raise NotImplementedError("patched_sdpa does not support enable_gqa")
 
+    if scale is None:
+        import math
+        scale = 1.0 / math.sqrt(query.shape[-1])
+
     mesh = jax.sharding.get_abstract_mesh()
 
     if scale is None:

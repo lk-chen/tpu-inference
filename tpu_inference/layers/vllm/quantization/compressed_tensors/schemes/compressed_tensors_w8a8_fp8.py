@@ -29,6 +29,8 @@ from vllm.model_executor.kernels.linear.scaled_mm import \
     FP8ScaledMMLinearLayerConfig
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8 import \
     CompressedTensorsW8A8Fp8
+from vllm.model_executor.layers.quantization.utils.quant_utils import \
+    GroupShape
 from vllm.platforms import PlatformEnum
 
 from tpu_inference.layers.common.linear import sharded_quantized_matmul
@@ -97,12 +99,22 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
         is_static_input_scheme: bool,
         linear_config: VllmQuantLinearConfig,
     ):
-        CompressedTensorsW8A8Fp8.__init__(
-            self,
-            weight_quant=weight_quant,
-            is_static_input_scheme=is_static_input_scheme)
+        super().__init__(weight_quant=weight_quant,
+                         is_static_input_scheme=is_static_input_scheme)
 
         self.linear_config = linear_config
+        self.out_dtype = torch.get_default_dtype()
+        self.weight_block_size = self.weight_quant.block_structure
+
+        if self.weight_block_size is not None:
+            self._setup_blockwise()
+
+    def _setup_blockwise(self):
+        """Setup blockwise quantization parameters."""
+        self.cutlass_block_fp8_supported = False
+        self.use_aiter_and_is_supported = False
+        assert not self.is_static_input_scheme
+        self.act_q_group_shape = GroupShape(1, self.weight_block_size[0])
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         weight = t2j(layer.weight, use_dlpack=False)

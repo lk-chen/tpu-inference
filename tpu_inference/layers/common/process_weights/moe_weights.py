@@ -570,14 +570,30 @@ def process_fp8_moe_weights(
 
     jax.debug.print("[Execution] Starting dequantization")
     # Dequantize fp8 2d block quantized weights into fp32.
-    w13_weight = dequantize_tensor(w13_weight,
-                                   w13_weight_scale, (1, 2),
-                                   jnp.float32,
-                                   block_size=weight_block_size)
-    w2_weight = dequantize_tensor(w2_weight,
-                                  w2_weight_scale, (1, 2),
-                                  jnp.float32,
-                                  block_size=weight_block_size)
+    if weight_block_size is None:
+        if w13_weight_scale.ndim == 2:
+            w13_weight_scale = jnp.expand_dims(w13_weight_scale, axis=1)
+        elif w13_weight_scale.ndim == 1:
+            w13_weight_scale = jnp.expand_dims(w13_weight_scale, axis=(1, 2))
+
+        if w2_weight_scale.ndim == 2:
+            w2_weight_scale = jnp.expand_dims(w2_weight_scale, axis=1)
+        elif w2_weight_scale.ndim == 1:
+            w2_weight_scale = jnp.expand_dims(w2_weight_scale, axis=(1, 2))
+
+        w13_weight = (w13_weight.astype(jnp.float32) *
+                      w13_weight_scale).astype(jnp.float32)
+        w2_weight = (w2_weight.astype(jnp.float32) * w2_weight_scale).astype(
+            jnp.float32)
+    else:
+        w13_weight = dequantize_tensor(w13_weight,
+                                       w13_weight_scale, (1, 2),
+                                       jnp.float32,
+                                       block_size=weight_block_size)
+        w2_weight = dequantize_tensor(w2_weight,
+                                      w2_weight_scale, (1, 2),
+                                      jnp.float32,
+                                      block_size=weight_block_size)
 
     w13_interleave = activation == "swigluoai"
     w13_reorder_size = get_mesh_shape_product(mesh,
