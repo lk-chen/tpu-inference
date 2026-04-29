@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
+os.environ["JAX_PLATFORMS"] = "cpu"
+
 import tempfile
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -479,5 +483,5 @@ def test_blockwise_config_construction():
 
     assert scheme.weight_block_size == [128, 128]
     assert scheme.cutlass_block_fp8_supported is False
-    assert scheme.use_aiter_and_is_supported is False
+    assert not scheme.use_aiter_and_is_supported
     assert scheme.act_q_group_shape == (1, 128)
