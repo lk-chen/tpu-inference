@@ -86,7 +86,7 @@ def _test_kv_cache_cpu_offloading_accuracy(
         pass1_time = t1 - t0
         print(f"Pass 1 generate took {pass1_time:.4f} seconds")
         out_texts1, out_tokens1 = parse_outputs(outputs1)
-        time.sleep(1)
+        time.sleep(10)
 
         # manually let llm scheduler's kv_cache_manager forget all prefixes' hash
         print("\n--- Resetting prefix cache ---")

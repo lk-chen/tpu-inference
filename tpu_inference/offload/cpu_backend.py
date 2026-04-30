@@ -86,9 +86,9 @@ class LocalCPUBackend:
         self._num_saved_cpu_chunks += 1
         value_size = self._get_value_size(value)
         self.current_size_bytes += value_size
-        logger.debug(
+        logger.info(
             f"Added chunk_id: {chunk_id} (size:{value_size}) to CPU backend.")
-        logger.debug(
+        logger.info(
             f"Cache: {self.current_size_bytes} bytes, {self._num_saved_cpu_chunks} occupied chunks."
         )
         self.metrics_collector.record_host_memory_usage(
@@ -116,7 +116,7 @@ class LocalCPUBackend:
             del dummy_value
         self.current_size_bytes -= reclaimed_size_bytes
 
-        logger.debug(
+        logger.info(
             f" Reclaimed {len(unoccupied_chunk_ids)} unoccupied chunks, "
             f"with {reclaimed_size_bytes} bytes.")
         self.metrics_collector.record_host_memory_usage(

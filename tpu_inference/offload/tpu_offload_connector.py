@@ -622,7 +622,8 @@ class TPUOffloadConnectorScheduler():
         num_total_blocks = len(block_hashes)
         logger.info(f"Checking for cache hit: {request.request_id},"
                     f"total_token_len: {request.num_tokens}, "
-                    f"block_hashes ({num_total_blocks}), "
+                    f"total num blocks: {num_total_blocks}, "
+                    f"block_hashes: {block_hashes}, "
                     f"already computed tokens: {num_computed_tokens}, "
                     f"tokens: {request.prompt_token_ids}. ")
 

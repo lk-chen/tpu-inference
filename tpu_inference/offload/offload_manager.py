@@ -148,6 +148,9 @@ class LRUCacheManager:
         return the number of cache hit starting from the first chunk
         """
         hit_count = 0
+        logger.info(
+            f"Current hashes in cpu_cache: {list(self.cpu_cache.keys())}, input chunk_hashes: {chunk_hashes}"
+        )
         for chunk_hash in chunk_hashes:
             chunk = self.cpu_cache.get(chunk_hash)
             if chunk is None or not chunk.is_ready_to_load:
@@ -173,7 +176,7 @@ class LRUCacheManager:
 
         num_new_chunks = len(new_chunk_idxs)
         if num_new_chunks == 0:
-            logger.debug("No new chunks to allocate")
+            logger.info("No new chunks to allocate")
             return None
         num_chunks_to_evict = max(
             0, num_new_chunks - self.chunk_pool.num_free_chunks)
@@ -370,7 +373,7 @@ class StagingBufferManager():
                 f" Staging buffer manager should not get usage: {usage}")
         self._num_free_blocks -= num_blocks
 
-        logger.debug(
+        logger.info(
             f"  allocate {num_blocks} staging blocks to Req:{req_id} for {usage}."
         )
         self.metrics_collector.record_staging_buffer_usage(
@@ -434,7 +437,7 @@ class StagingBufferManager():
                 f" Staging buffer manager should not get usage: {usage}")
         self._num_free_blocks += num_freed_blocks
 
-        logger.debug(
+        logger.info(
             f"  free {num_freed_blocks} staging blocks (usage: {usage}) from Req:{req_id}"
         )
         self.metrics_collector.record_staging_buffer_usage(
