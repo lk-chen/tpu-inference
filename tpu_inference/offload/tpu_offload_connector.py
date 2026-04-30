@@ -1165,8 +1165,7 @@ class TPUOffloadConnectorScheduler():
                     "finished_load_chunks"].items():
                 num_loaded_chunks = len(loaded_chunk_ids)
                 logger.info(
-                    f"  finished_load_chunks for {req_id}: {num_loaded_chunks}"
-                )
+                    f"  finished_load_chunks for {req_id}: {loaded_chunk_ids}")
                 self.staging_buffer_manager.free(
                     req_id,
                     usage="load",

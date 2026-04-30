@@ -261,6 +261,7 @@ class LRUCacheManager:
                 f"  Chunks[{unknown_chunk_ids}] are not found as allocated chunks in the pool."
             )
 
+        logger.info(f"Completed {operation} for chunk hashes: {chunk_hashes}")
         if operation == 'save':
             self.complete_save(chunk_hashes)
         elif operation == 'load':
