@@ -143,10 +143,7 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
                                                        weight, None)
             else:
                 if weight_scale.ndim == 2:
-                    if weight_scale.shape[0] == 1:
-                        weight_scale = weight_scale[0]
-                    elif weight_scale.shape[1] == 1:
-                        weight_scale = weight_scale[:, 0]
+                    weight_scale = jnp.squeeze(weight_scale)
 
             return process_linear_weights(
                 LinearWeights(
@@ -239,14 +236,6 @@ class VllmCompressedTensorsW8A8Fp8(CompressedTensorsW8A8Fp8):
         x_jax = jax_view(x)
         weight_jax = jax_view(layer.weight)
         weight_scale_jax = jax_view(layer.weight_scale)
-
-        if weight_scale_jax.ndim == 2:
-            num_blocks_n, num_blocks_k = weight_scale_jax.shape
-            out_features = weight_jax.shape[0]
-            block_size_n = out_features // num_blocks_n  # e.g., 128
-            weight_scale_jax = jnp.repeat(weight_scale_jax,
-                                          block_size_n,
-                                          axis=0).T[:, None, :]
 
         if self.is_static_input_scheme:
             # TODO(kyuyeunk): Add kernel support for static quant

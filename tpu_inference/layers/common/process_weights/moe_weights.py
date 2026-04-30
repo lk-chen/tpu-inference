@@ -167,24 +167,12 @@ def process_w13_for_gmm(tensor,
     """helper to split, pad, concatenate, and reorder w13 tensors."""
 
     # 1. Split into W1 and W3
-    # Dynamically find the split point. If it's a blocked scale, its last dimension
-    # will be a fraction of the intermediate size.
-    if tensor.shape[-1] == config.intermediate_size * 2:
-        split_idx = config.intermediate_size
-    else:
-        split_idx = tensor.shape[-1] // 2
-
-    w1 = tensor[..., :split_idx]
-    w3 = tensor[..., split_idx:]
+    w1 = tensor[..., :config.intermediate_size]
+    w3 = tensor[..., config.intermediate_size:]
 
     # 2. Pad the intermediate dimension
     def _pad_tensor(t):
         dims = t.shape[:-1]
-
-        # If the last dimension doesn't match the expected intermediate_size
-        # (e.g. for blockwise scales where the last dim is block_size/K), skip padding
-        if t.shape[-1] != config.local_intermediate_size:
-            return t
 
         # Reshape to expose local_intermediate_size
         t = t.reshape(*dims, config.w13_reorder_size,
@@ -273,33 +261,12 @@ def process_moe_weights(
 
     if w13_weight_scale is not None:
         w13_weight_scale = w13_weight_scale.astype(jnp.float32)
-        if w13_weight_scale.ndim == 3:
-            # Blocked scales: (num_experts, num_blocks_n, num_blocks_k)
-            # The GMM kernel expects (size_group, num_blocks_k, 1, size_n)
-            size_n = w13_weight.shape[2]
-            num_blocks_n = w13_weight_scale.shape[1]
-            block_size_n = size_n // num_blocks_n
-            w13_weight_scale = jnp.repeat(w13_weight_scale,
-                                          block_size_n,
-                                          axis=1)
-            w13_weight_scale = jnp.swapaxes(w13_weight_scale, 1, 2)
-            w13_weight_scale = jnp.expand_dims(w13_weight_scale, 2)
-        else:
-            w13_weight_scale = jnp.swapaxes(w13_weight_scale, 1, 2)
-            w13_weight_scale = jnp.expand_dims(w13_weight_scale, 2)
+        w13_weight_scale = jnp.swapaxes(w13_weight_scale, 1, 2)
+        w13_weight_scale = jnp.expand_dims(w13_weight_scale, 2)
     if w2_weight_scale is not None:
         w2_weight_scale = w2_weight_scale.astype(jnp.float32)
-        if w2_weight_scale.ndim == 3:
-            # Blocked scales
-            size_n = w2_weight.shape[2]
-            num_blocks_n = w2_weight_scale.shape[1]
-            block_size_n = size_n // num_blocks_n
-            w2_weight_scale = jnp.repeat(w2_weight_scale, block_size_n, axis=1)
-            w2_weight_scale = jnp.swapaxes(w2_weight_scale, 1, 2)
-            w2_weight_scale = jnp.expand_dims(w2_weight_scale, 2)
-        else:
-            w2_weight_scale = jnp.swapaxes(w2_weight_scale, 1, 2)
-            w2_weight_scale = jnp.expand_dims(w2_weight_scale, 2)
+        w2_weight_scale = jnp.swapaxes(w2_weight_scale, 1, 2)
+        w2_weight_scale = jnp.expand_dims(w2_weight_scale, 2)
     if w13_bias is not None:
         w13_bias = w13_bias.astype(jnp.float32)
         w13_bias = jnp.expand_dims(w13_bias, 1)

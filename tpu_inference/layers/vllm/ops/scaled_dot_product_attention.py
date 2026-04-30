@@ -41,10 +41,6 @@ def scaled_dot_product_attention(
 
     mesh = jax.sharding.get_abstract_mesh()
 
-    if scale is None:
-        import math
-        scale = 1.0 / math.sqrt(query.shape[-1])
-
     # Q, K, V shapes: (batch, num_heads, seq_len, head_dim)
     batch = query.shape[0]
     num_heads = query.shape[1]

@@ -16,6 +16,7 @@ import jax
 import torch
 import torchax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
+from torch.utils import _pytree as pytree
 from torchax.interop import jax_view, torch_view
 from vllm import envs as vllm_envs
 from vllm.lora.layers import (ColumnParallelLinearWithLoRA,
@@ -56,13 +57,13 @@ def shard_model_to_tpu(model: torch.nn.Module,
         _shard_module_to_tpu(model, mesh)
 
         params, buffers = _extract_all_params_buffers(model)
-        all_tensors = {**params, **buffers}
+        # For other weight tensors, repliate them on all the TPU chips.
+        params, buffers = pytree.tree_map_only(
+            _tensor_is_in_cpu,
+            lambda tensor: _shard_tensor_to_tpu_replicated(tensor, mesh),
+            (params, buffers))
 
-        return {
-            name: (_shard_tensor_to_tpu_replicated(tensor, mesh)
-                   if _tensor_is_in_cpu(tensor) else tensor)
-            for name, tensor in all_tensors.items()
-        }
+        return {**params, **buffers}
 
 
 def update_lora(model: torch.nn.Module,
