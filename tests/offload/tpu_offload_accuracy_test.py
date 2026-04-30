@@ -89,11 +89,16 @@ def _test_kv_cache_cpu_offloading_accuracy(
         time.sleep(10)
 
         # Intermediate generate
-        print("\n--- Intermediate Pass: Generating for a new request ---")
-        new_prompt = ["What is the capital of France?"]
+        print("\n--- Intermediate Pass: Generating for new requests ---")
+        new_prompt = [
+            "What is the capital of France?",
+            "Explain quantum computing in simple terms.",
+            "Write a short poem about a robot."
+        ]
         outputs_mid = llm.generate(new_prompt, sampling_config)
         out_texts_mid, out_tokens_mid = parse_outputs(outputs_mid)
-        print(f"Intermediate Output: {out_texts_mid[0]!r}")
+        for i, text in enumerate(out_texts_mid):
+            print(f"Intermediate Output {i}: {text!r}")
         time.sleep(1)
 
         # manually let llm scheduler's kv_cache_manager forget all prefixes' hash
