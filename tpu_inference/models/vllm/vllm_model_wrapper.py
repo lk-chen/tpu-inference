@@ -455,6 +455,20 @@ class VllmModelWrapper:
                     else:
                         torch_mm_embeds = torch_view(mm_embeds)
                     assert is_multimodal is not None
+                    # Replicate is_multimodal to avoid multi-host fetching errors during boolean indexing
+                    if hasattr(is_multimodal, "is_fully_addressable"
+                               ) and not is_multimodal.is_fully_addressable:
+                        from jax.sharding import NamedSharding, PartitionSpec
+                        if hasattr(is_multimodal, "sharding"
+                                   ) and is_multimodal.sharding is not None:
+                            mesh = getattr(is_multimodal.sharding, "mesh",
+                                           None)
+                            if mesh is not None:
+                                import jax
+                                is_multimodal = jax.device_put(
+                                    is_multimodal,
+                                    NamedSharding(mesh, PartitionSpec()))
+
                     torch_mm_embeds = torch_mm_embeds[is_multimodal]
                     call_args = (torch_view(input_ids), torch_mm_embeds)
                 else:
