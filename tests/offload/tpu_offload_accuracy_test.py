@@ -88,6 +88,14 @@ def _test_kv_cache_cpu_offloading_accuracy(
         out_texts1, out_tokens1 = parse_outputs(outputs1)
         time.sleep(10)
 
+        # Intermediate generate
+        print("\n--- Intermediate Pass: Generating for a new request ---")
+        new_prompt = ["What is the capital of France?"]
+        outputs_mid = llm.generate(new_prompt, sampling_config)
+        out_texts_mid, out_tokens_mid = parse_outputs(outputs_mid)
+        print(f"Intermediate Output: {out_texts_mid[0]!r}")
+        time.sleep(1)
+
         # manually let llm scheduler's kv_cache_manager forget all prefixes' hash
         print("\n--- Resetting prefix cache ---")
         llm.llm_engine.engine_core.reset_prefix_cache()
