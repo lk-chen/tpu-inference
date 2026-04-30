@@ -20,14 +20,51 @@ from typing import Any, Callable, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
+import torch
+from torchax.ops.jtorch import register_function
 from vllm.config import VllmConfig
 from vllm.model_executor.models.qwen3_5 import \
     Qwen3_5MoeForConditionalGeneration
 
+from tpu_inference.kernels.flash_attention.kernel import MIN_BLOCK_SIZE
+from tpu_inference.layers.common.attention_interface import \
+    sharded_flash_attention
 from tpu_inference.logger import init_logger
 from tpu_inference.utils import to_jax_dtype
 
 logger = init_logger(__name__)
+
+# Per-image patch lengths set before jax.jit by embed_multimodal_func_torch.
+# cu_seqlens is a traced JAX array inside jit and cannot be concretized
+# directly, so concrete lengths are communicated via this module-level variable.
+_vit_image_patch_lens: Optional[list[int]] = None
+_jittable_vit_sdpa_registered: bool = False
+
+
+def set_vit_image_patch_lens(lens: Optional[list[int]]) -> None:
+    """Set per-image patch lengths before calling jax.jit for the vision encoder.
+
+    Raises RuntimeError if the jittable ViT SDPA has not been registered
+    (i.e., the model architecture is not in JITTABLE_ARCHS).
+    """
+    if not _jittable_vit_sdpa_registered:
+        raise RuntimeError(
+            "set_vit_image_patch_lens: jittable ViT SDPA is not registered. "
+            "Call maybe_register_jittable_vit_sdpa first.")
+    global _vit_image_patch_lens
+    _vit_image_patch_lens = lens
+
+
+def register_function_if(op, condition: bool):
+    """Like @register_function(op) but only registers if condition is True."""
+
+    def decorator(fn: Callable) -> Callable:
+        if condition:
+            register_function(op)(fn)
+        return fn
+
+    return decorator
+
 
 # Architectures whose embed_multimodal function is safe to wrap with jax.jit.
 JITTABLE_ARCHS = {
@@ -166,7 +203,7 @@ def maybe_precompile_vision_encoder_fn(
 
 def maybe_prepare_for_jit(kwargs: dict, vllm_model) -> dict:
     """Convert certain kwargs to JIT-friendly formats, if needed.
-    
+
     Specifically, convert "image_grid_thw", "video_grid_thw", and "grid_thw" to
     GridTHW instances, which are tuple subclasses that can be hashed in jax.jit.
     """
@@ -177,3 +214,99 @@ def maybe_prepare_for_jit(kwargs: dict, vllm_model) -> dict:
         if k in ("image_grid_thw", "video_grid_thw", "grid_thw"):
             kwargs[k] = GridTHW(v.tolist())
     return kwargs
+
+
+def maybe_register_jittable_vit_sdpa(vllm_model) -> None:
+    """Override torch_sdpa_wrapper with a per-image-chunking implementation
+    for jittable architectures.
+
+    For jittable archs, the standard segment-ID implementation in
+    scaled_dot_product_attention.py would OOM on VMEM because flash attention
+    sees the full concatenated patch sequence.  The per-image chunking
+    implementation registered here bounds VMEM to the largest single image.
+
+    Must be called once after the model is loaded and before any inference.
+    """
+    global _jittable_vit_sdpa_registered
+
+    if not is_jittable_architecture(vllm_model):
+        return
+
+    @register_function_if(torch.ops.vllm.torch_sdpa_wrapper, True)
+    def _vllm_vit_sdpa_jittable(
+        query,
+        key,
+        value,
+        scale=None,
+        cu_seqlens=None,
+        enable_gqa=False,
+    ):
+        """Per-image chunking ViT SDPA for jittable architectures.
+
+        cu_seqlens is a traced JAX array inside jit and cannot be concretized,
+        so per-image patch lengths are read from _vit_image_patch_lens instead,
+        which is set before jax.jit by embed_multimodal_func_torch.
+        """
+        # (batch, seq_len, num_heads, head_dim) → (batch, num_heads, seq_len, head_dim)
+        query = jnp.swapaxes(query, 1, 2)
+        key = jnp.swapaxes(key, 1, 2)
+        value = jnp.swapaxes(value, 1, 2)
+
+        mesh = jax.sharding.get_abstract_mesh()
+        attn_fn = sharded_flash_attention(mesh,
+                                          causal=False,
+                                          sm_scale=scale,
+                                          use_attention_bias=False)
+
+        if cu_seqlens is not None and _vit_image_patch_lens is not None:
+            outputs = []
+            start = 0
+            for length in _vit_image_patch_lens:
+                q_chunk = query[:, :, start:start + length, :]
+                k_chunk = key[:, :, start:start + length, :]
+                v_chunk = value[:, :, start:start + length, :]
+
+                pad = (MIN_BLOCK_SIZE -
+                       (length % MIN_BLOCK_SIZE)) % MIN_BLOCK_SIZE
+                if pad > 0:
+                    q_chunk = jnp.pad(q_chunk,
+                                      ((0, 0), (0, 0), (0, pad), (0, 0)))
+                    k_chunk = jnp.pad(k_chunk,
+                                      ((0, 0), (0, 0), (0, pad), (0, 0)))
+                    v_chunk = jnp.pad(v_chunk,
+                                      ((0, 0), (0, 0), (0, pad), (0, 0)))
+
+                out_chunk = attn_fn(q_chunk, k_chunk, v_chunk, None)
+
+                if pad > 0:
+                    out_chunk = out_chunk[:, :, :length, :]
+                outputs.append(out_chunk)
+                start += length
+
+            out = jnp.concatenate(outputs, axis=2)
+        else:
+            q_seq_len = query.shape[2]
+            kv_seq_len = key.shape[2]
+
+            q_pad = (MIN_BLOCK_SIZE -
+                     (q_seq_len % MIN_BLOCK_SIZE)) % MIN_BLOCK_SIZE
+            kv_pad = (MIN_BLOCK_SIZE -
+                      (kv_seq_len % MIN_BLOCK_SIZE)) % MIN_BLOCK_SIZE
+
+            if q_pad > 0:
+                query = jnp.pad(query, ((0, 0), (0, 0), (0, q_pad), (0, 0)))
+            if kv_pad > 0:
+                key = jnp.pad(key, ((0, 0), (0, 0), (0, kv_pad), (0, 0)))
+                value = jnp.pad(value, ((0, 0), (0, 0), (0, kv_pad), (0, 0)))
+
+            out = attn_fn(query, key, value, None)
+
+            if q_pad > 0:
+                out = out[:, :, :q_seq_len, :]
+
+        # (batch, num_heads, seq_len, head_dim) → (batch, seq_len, num_heads, head_dim)
+        return jnp.swapaxes(out, 1, 2)
+
+    _jittable_vit_sdpa_registered = True
+    logger.info("Registered jittable per-image-chunking ViT SDPA for %s.",
+                type(vllm_model).__name__)

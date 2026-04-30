@@ -61,7 +61,8 @@ from tpu_inference.models.vllm.experimental.qwen3_vl_patcher import \
     maybe_apply_qwen3_vl_patches
 from tpu_inference.models.vllm.experimental.vision_tower_jit import (
     maybe_jit_embed_multimodal_func, maybe_precompile_vision_encoder_fn,
-    maybe_prepare_for_jit)
+    maybe_prepare_for_jit, maybe_register_jittable_vit_sdpa,
+    set_vit_image_patch_lens)
 from tpu_inference.models.vllm.vllm_model_wrapper_context import (
     get_vllm_model_wrapper_context, set_vllm_model_wrapper_context)
 from tpu_inference.runner.lora_utils import replace_lora_metadata
@@ -241,6 +242,7 @@ class VllmModelWrapper:
                 vllm_model, self.vllm_config.speculative_config)
 
         self.model = _VllmRunner(vllm_model)
+        maybe_register_jittable_vit_sdpa(vllm_model)
         params_and_buffers = shard_model_to_tpu(self.model, self.mesh)
 
         self._pooler: Pooler | None = self.model.pooler
@@ -457,6 +459,17 @@ class VllmModelWrapper:
                                         **kwargs) -> Any:
             # embed_multimodal_func_jax requires kwargs to be jax.Array such that jit can work
             # Here we move_to_jax, then call (maybe jit'ed) embed_multimodal_func_jax.
+            grid = kwargs.get("image_grid_thw")
+
+            # Compute concrete per-image patch lengths from the static grid arg
+            # and pass them to vllm_vit_sdpa_jittable via module-level variable.
+            # cu_seqlens is a traced JAX array inside jit and cannot be
+            # concretized directly.  set_vit_image_patch_lens raises if the
+            # jittable ViT SDPA was not registered (non-jittable architecture).
+            if grid is not None:
+                set_vit_image_patch_lens(
+                    [int(t) * int(h) * int(w) for t, h, w in grid])
+
             with torchax.default_env(), enable_torch_wrap(False):
 
                 kwargs = maybe_prepare_for_jit(kwargs, self.model.vllm_model)
@@ -473,9 +486,13 @@ class VllmModelWrapper:
                     k: jax.tree.map(move, v)
                     for k, v in kwargs.items()
                 }
-                return maybe_jit_embed_multimodal_func(
-                    embed_multimodal_func_jax,
-                    self.model.vllm_model)(params_and_buffers, **call_kwargs)
+                try:
+                    return maybe_jit_embed_multimodal_func(
+                        embed_multimodal_func_jax,
+                        self.model.vllm_model)(params_and_buffers,
+                                               **call_kwargs)
+                finally:
+                    set_vit_image_patch_lens(None)
 
         return embed_multimodal_func_torch
 
