@@ -13,6 +13,8 @@
 # limitations under the License.
 """Register function to overwrite torch functions used by vllm via torchax."""
 
+import math
+
 import jax
 import jax.numpy as jnp
 import torch
@@ -38,6 +40,9 @@ def scaled_dot_product_attention(
         raise NotImplementedError("patched_sdpa does not support dropout_p")
     if enable_gqa is not False:
         raise NotImplementedError("patched_sdpa does not support enable_gqa")
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(query.shape[-1])
 
     mesh = jax.sharding.get_abstract_mesh()
 
@@ -105,6 +110,9 @@ def vllm_vit_sdpa(
     query = jnp.swapaxes(query, 1, 2)
     key = jnp.swapaxes(key, 1, 2)
     value = jnp.swapaxes(value, 1, 2)
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(query.shape[-1])
 
     mesh = jax.sharding.get_abstract_mesh()
 
