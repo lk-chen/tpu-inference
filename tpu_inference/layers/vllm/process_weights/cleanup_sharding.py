@@ -57,6 +57,7 @@ def shard_model_to_tpu(model: torch.nn.Module,
         _shard_module_to_tpu(model, mesh)
 
         params, buffers = _extract_all_params_buffers(model)
+
         # For other weight tensors, repliate them on all the TPU chips.
         params, buffers = pytree.tree_map_only(
             _tensor_is_in_cpu,
