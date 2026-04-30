@@ -281,3 +281,60 @@ def quantize_kv(
         return key, None
     value = static_per_tensor_quantize_tensor(dtype, value, v_scale)
     return key, value
+
+
+def quantize_tq_kv(
+    key: jax.Array,
+    value: jax.Array,
+    tq_config: Any,
+    pi_t: jax.Array | None = None,
+    midpoints: jax.Array | None = None,
+) -> Tuple[jax.Array, jax.Array]:
+    """TurboQuant quantization of key and value tensors."""
+    # 1. Key Quantization
+    if tq_config.key_fp8:
+        # FP8 keys: no rotation, just cast to float8_e4m3fn
+        # (vLLM packs this into uint8, but JAX has native fp8)
+        # For simplicity in this draft, we'll cast to fp8 and then bitcast to uint8
+        key_q = static_per_tensor_quantize_tensor(jnp.float8_e4m3fn, key, 1.0)
+        key_packed = jax.lax.bitcast_convert_type(key_q, jnp.uint8)
+    else:
+        # MSE keys: normalize, rotate, bucketize, pack
+        norms = jnp.linalg.norm(key, axis=-1, keepdims=True)
+        key_hat = key / (norms + 1e-8)
+        y = jnp.dot(key_hat, pi_t)
+
+        # Bucketize y using midpoints
+        # idx: (N, K, H) int32
+        idx = jnp.digitize(y, midpoints)
+
+        # Pack indices (4-bit or 3-bit)
+        if tq_config.key_mse_bits == 4:
+            # head_dim must be even
+            idx_reshaped = idx.reshape(idx.shape[:-1] + (-1, 2))
+            key_mse_packed = (idx_reshaped[..., 0] |
+                              (idx_reshaped[..., 1] << 4)).astype(jnp.uint8)
+        elif tq_config.key_mse_bits == 3:
+            # 3-bit packing is more involved (8 indices into 3 bytes)
+            # For draft, we'll leave a placeholder or implement it if possible
+            # Let's just do 4-bit for now as a POC
+            key_mse_packed = idx.astype(jnp.uint8)  # Unpacked for now
+        else:
+            key_mse_packed = idx.astype(jnp.uint8)
+
+        # Pack norm (fp16)
+        norm_fp16 = norms.astype(jnp.float16)
+        norm_bytes = jax.lax.bitcast_convert_type(norm_fp16, jnp.uint8)
+        # norm_bytes: (N, K, 1, 2) uint8
+
+        # Concatenate packed indices and norm bytes
+        # This requires careful layout management
+        # For now, just return them or concatenate if shapes match
+        key_packed = key_mse_packed  # Placeholder
+
+    # 2. Value Quantization (Uniform)
+    # val_min, val_max = jnp.min(value, axis=-1), jnp.max(value, axis=-1)
+    # ... uniform quant logic ...
+    value_packed = value.astype(jnp.uint8)  # Placeholder
+
+    return key_packed, value_packed

@@ -57,6 +57,7 @@ class Attention(nnx.Module):
     dtype: jnp.dtype
     mesh: Mesh
     kv_cache_dtype: str
+    layer_idx: int = 0
 
     dnh_sharding: Sharding = ()
     dkh_sharding: Sharding = ()
@@ -78,6 +79,7 @@ class Attention(nnx.Module):
     _v_scale: float = 1.0
 
     kv_cache_quantized_dtype = None
+    tq_config = None
 
     def __post_init__(self, rngs: nnx.Rngs):
         """Initializes the weight kernels for Q, K, V, and O projections."""
@@ -104,8 +106,30 @@ class Attention(nnx.Module):
                                               random_init=self.random_init)
 
         if self.kv_cache_dtype != "auto":
-            self.kv_cache_quantized_dtype = utils.get_jax_dtype_from_str_dtype(
-                self.kv_cache_dtype)
+            if self.kv_cache_dtype.startswith("turboquant_"):
+                from tpu_inference.layers.common.quantization import \
+                    turboquant_utils
+                from tpu_inference.layers.vllm.quantization.turboquant import \
+                    VllmTurboQuantConfig
+
+                self.tq_config = VllmTurboQuantConfig.from_cache_dtype(
+                    self.kv_cache_dtype, H)
+
+                # Initialize TQ buffers
+                # We use a fixed base seed (42) and add layer_idx * stride (1337)
+                seed = 42 + self.layer_idx * 1337
+                self.tq_pi, self.tq_pi_t = turboquant_utils.get_turboquant_rotation(
+                    H, seed)
+                self.tq_centroids = turboquant_utils.get_centroids(
+                    H, self.tq_config.mse_bits)
+                self.tq_midpoints = turboquant_utils.get_midpoints(
+                    H, self.tq_config.mse_bits)
+
+                # For TQ, the KV cache dtype stored is uint8 (packed)
+                self.kv_cache_quantized_dtype = jnp.uint8
+            else:
+                self.kv_cache_quantized_dtype = utils.get_jax_dtype_from_str_dtype(
+                    self.kv_cache_dtype)
 
     def __call__(self,
                  x,
@@ -144,6 +168,13 @@ class Attention(nnx.Module):
                 q_TNH = apply_rope(q_TNH, md.input_positions, H,
                                    self.rope_theta, self.rope_scaling,
                                    self.rope_input_ordering)
+
+            if self.tq_config and not self.tq_config.key_fp8:
+                # Score = Q * K^T = Q * (Y * Pi)^T = Q * Pi^T * Y^T = (Q * Pi^T) * Y^T
+                # Q_rot = Q @ Pi^T
+                # q_TNH: (T, N, H), tq_pi_t: (H, H)
+                q_TNH = jnp.dot(q_TNH, self.tq_pi_t)
+
             q_TNH = lax.with_sharding_constraint(q_TNH, self.query_tnh)
         with jax.named_scope("k_proj"):
             k_SKH = jnp.einsum('SD,DKH -> SKH', x_SD,
@@ -159,7 +190,11 @@ class Attention(nnx.Module):
                                self.kernel_v_proj_DKH.value)
 
         q_scale = k_scale = v_scale = None
-        if self.kv_cache_quantized_dtype:
+        if self.tq_config:
+            from tpu_inference.layers.common.quantization import quantize_tq_kv
+            k_SKH, v_SKH = quantize_tq_kv(k_SKH, v_SKH, self.tq_config,
+                                          self.tq_pi_t, self.tq_midpoints)
+        elif self.kv_cache_quantized_dtype:
             # TODO(kyuyeunk/jacobplatin): Enable w8a8 when VREG spill issue is resolved.
             # q_scale = self._q_scale
             k_scale = self._k_scale
@@ -179,6 +214,7 @@ class Attention(nnx.Module):
                 q_scale=q_scale,
                 k_scale=k_scale,
                 v_scale=v_scale,
+                tq_centroids=self.tq_centroids if self.tq_config else None,
             )
 
         with jax.named_scope("o_proj"):
@@ -198,6 +234,7 @@ class Attention(nnx.Module):
         q_scale: float | None = None,
         k_scale: float | None = None,
         v_scale: float | None = None,
+        tq_centroids: jax.Array | None = None,
     ) -> Tuple[KVCache, jax.Array]:
         """Performs scaled dot-product attention and updates the KV cache.
 
@@ -241,12 +278,26 @@ class Attention(nnx.Module):
         out_specs = (self.attn_o_tnh, kv_cache_spec)
 
         def _ragged_paged_attention(*args):
+            # Toggle between Pallas kernel and Pure JAX reference
+            if envs.USE_REF_ATTN:
+                from tpu_inference.kernels.ragged_paged_attention.v3.kernel import \
+                    ref_ragged_paged_attention
+                return ref_ragged_paged_attention(
+                    *args,
+                    sm_scale=q_TNH.shape[-1]**-0.5,
+                    q_scale=q_scale,
+                    k_scale=k_scale,
+                    v_scale=v_scale,
+                    tq_centroids=tq_centroids,
+                )
+
             return ragged_paged_attention(
                 *args,
                 sm_scale=q_TNH.shape[-1]**-0.5,
                 q_scale=q_scale,
                 k_scale=k_scale,
                 v_scale=v_scale,
+                tq_centroids=tq_centroids,
             )
 
         output_TNH, kv_cache = jax.jit(

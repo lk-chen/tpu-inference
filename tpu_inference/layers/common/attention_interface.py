@@ -339,6 +339,7 @@ def sharded_ragged_paged_attention(
     q_scale: float | None = None,
     k_scale: float | None = None,
     v_scale: float | None = None,
+    tq_centroids: jax.Array | None = None,
 ):
     """Shards along KV heads."""
     # Handle GQA/MQA where num_kv_heads < tp_size
@@ -371,7 +372,11 @@ def sharded_ragged_paged_attention(
     )
     out_specs = (qkv_spec, kv_cache_spec)
 
-    args = (q, k, v, kv_cache, kv_lens, page_indices, cu_q_lens, distribution)
+    args = [q, k, v, kv_cache, md.seq_lens, md.block_tables, md.query_start_loc, md.request_distribution]
+
+    if tq_centroids is not None:
+        in_specs += (P(None), )  # tq_centroids is replicated
+        args.append(tq_centroids)
 
     use_hd64 = q.shape[-1] == 64
     func = ragged_paged_attention_hd64 if use_hd64 else ragged_paged_attention
@@ -382,7 +387,7 @@ def sharded_ragged_paged_attention(
                 "Attention sink support is only available when head_dim==64")
 
         in_specs += (P(ShardingAxisName.ATTN_HEAD), )
-        args += (attention_sink, )
+        args.append(attention_sink)
 
     def _ragged_paged_attention(*args):
         return func(
@@ -392,6 +397,7 @@ def sharded_ragged_paged_attention(
             q_scale=q_scale,
             k_scale=k_scale,
             v_scale=v_scale,
+            tq_centroids=tq_centroids,
         )
 
     return jax.shard_map(
@@ -400,7 +406,7 @@ def sharded_ragged_paged_attention(
         in_specs=in_specs,
         out_specs=out_specs,
         check_vma=False,
-    )(*args)
+    )(*tuple(args))
 
 
 def attention(
@@ -417,6 +423,7 @@ def attention(
     k_scale: float | None = None,
     v_scale: float | None = None,
     sinks: jax.Array | None = None,
+    tq_centroids: jax.Array | None = None,
 ) -> Tuple[jax.Array, jax.Array]:
     # T: seq_len
     # N: num_heads
@@ -455,6 +462,7 @@ def attention(
         q_scale=q_scale,
         k_scale=k_scale,
         v_scale=v_scale,
+        tq_centroids=tq_centroids,
     )
 
     return kv_cache, output

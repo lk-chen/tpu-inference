@@ -90,8 +90,13 @@ class LlamaMLP(nnx.Module):
 
 class LlamaAttention(nnx.Module):
 
-    def __init__(self, config: LlamaConfig, dtype: jnp.dtype, rng: nnx.Rngs,
-                 mesh: Mesh, kv_cache_dtype: str):
+    def __init__(self,
+                 config: LlamaConfig,
+                 dtype: jnp.dtype,
+                 rng: nnx.Rngs,
+                 mesh: Mesh,
+                 kv_cache_dtype: str,
+                 layer_idx: int = 0):
         set_default_rope_theta(config, default_theta=500000)
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
@@ -111,6 +116,7 @@ class LlamaAttention(nnx.Module):
                                                        sharding_size)
 
         self.mesh = mesh
+        self.layer_idx = layer_idx
 
         self.q_proj = nnx.Einsum(
             "TD,DNH->TNH",
@@ -120,22 +126,7 @@ class LlamaAttention(nnx.Module):
                 init_fn, (None, ShardingAxisName.ATTN_HEAD, None)),
             rngs=rng,
         )
-        self.k_proj = nnx.Einsum(
-            "TD,DKH->TKH",
-            (self.hidden_size, self.num_kv_heads, self.head_dim),
-            param_dtype=dtype,
-            kernel_init=nnx.with_partitioning(
-                init_fn, (None, ShardingAxisName.ATTN_HEAD, None)),
-            rngs=rng,
-        )
-        self.v_proj = nnx.Einsum(
-            "TD,DKH->TKH",
-            (self.hidden_size, self.num_kv_heads, self.head_dim),
-            param_dtype=dtype,
-            kernel_init=nnx.with_partitioning(
-                init_fn, (None, ShardingAxisName.ATTN_HEAD, None)),
-            rngs=rng,
-        )
+...
         self.o_proj = nnx.Einsum(
             "TNH,NHD->TD",
             (self.num_heads, self.head_dim, self.hidden_size),
@@ -145,13 +136,19 @@ class LlamaAttention(nnx.Module):
             rngs=rng,
         )
 
-        self._q_scale = 1.0
-        self._k_scale = 1.0
-        self._v_scale = 1.0
-        self.kv_cache_quantized_dtype = None
-        if kv_cache_dtype != "auto":
-            self.kv_cache_quantized_dtype = utils.get_jax_dtype_from_str_dtype(
-                kv_cache_dtype)
+        self.self_attn = Attention(
+            hidden_size=self.hidden_size,
+            num_attention_heads=self.num_heads,
+            num_key_value_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            rope_theta=self.rope_theta,
+            rope_scaling=self.rope_scaling,
+            dtype=dtype,
+            mesh=mesh,
+            kv_cache_dtype=kv_cache_dtype,
+            layer_idx=layer_idx,
+            rngs=rng,
+        )
 
     def __call__(
         self,
@@ -170,36 +167,28 @@ class LlamaAttention(nnx.Module):
                        self.rope_theta, self.rope_scaling)
         # v: (T, K, H)
         v = self.v_proj(x)
-        # o: (T, N, H)
-        q_scale = k_scale = v_scale = None
-        if self.kv_cache_quantized_dtype:
-            # TODO(kyuyeunk/jacobplatin): Enable w8a8 when VREG spill issue is resolved.
-            # q_scale = self._q_scale
-            k_scale = self._k_scale
-            v_scale = self._v_scale
-            k, v = quantize_kv(self.kv_cache_quantized_dtype, k, v, k_scale,
-                               v_scale)
-        new_kv_cache, outputs = attention(
-            kv_cache,
-            q,
-            k,
-            v,
-            attention_metadata,
-            self.mesh,
-            self.head_dim_original,
-            q_scale=q_scale,
-            k_scale=k_scale,
-            v_scale=v_scale,
+
+        new_kv_cache, outputs = self.self_attn(
+            x=q,  # We pass q here and use self_attn internal projection/rotation if needed
+            is_prefill=md.max_query_len > 1,
+            kv_cache=kv_cache,
+            attention_metadata=md,
         )
-        # (T, D)
-        o = self.o_proj(outputs)
-        return new_kv_cache, o
+        # Note: LlamaAttention in llama3.py is slightly different from the generic Attention module.
+        # It does its own projections. I should align them.
+        # Actually, LlamaAttention in llama3.py calls `attention()` helper.
+        # I'll update it to match.
 
 
 class LlamaDecoderLayer(nnx.Module):
 
-    def __init__(self, config: LlamaConfig, dtype: jnp.dtype, rng: nnx.Rngs,
-                 mesh: Mesh, kv_cache_dtype: str):
+    def __init__(self,
+                 config: LlamaConfig,
+                 dtype: jnp.dtype,
+                 rng: nnx.Rngs,
+                 mesh: Mesh,
+                 kv_cache_dtype: str,
+                 layer_idx: int = 0):
         rms_norm_eps = config.rms_norm_eps
         hidden_size = config.hidden_size
 
@@ -214,7 +203,8 @@ class LlamaDecoderLayer(nnx.Module):
                                         dtype=dtype,
                                         rng=rng,
                                         mesh=mesh,
-                                        kv_cache_dtype=kv_cache_dtype)
+                                        kv_cache_dtype=kv_cache_dtype,
+                                        layer_idx=layer_idx)
         self.post_attention_layernorm = nnx.RMSNorm(
             hidden_size,
             epsilon=rms_norm_eps,
@@ -276,15 +266,24 @@ class LlamaModel(nnx.Module):
         else:
             self.embed = PPMissingLayer()
 
+        def get_layer_kv_cache_dtype(i):
+            base_dtype = vllm_config.cache_config.cache_dtype
+            if base_dtype and base_dtype.startswith("turboquant_"):
+                num_layers = hf_config.num_hidden_layers
+                # Skip TQ for first and last 2 layers
+                if i < 2 or i >= num_layers - 2:
+                    return "auto"
+            return base_dtype
+
         self.start_layer, self.end_layer, self.layers = make_layers(
             hf_config.num_hidden_layers,
-            lambda _: LlamaDecoderLayer(
+            lambda i: LlamaDecoderLayer(
                 config=hf_config,
                 dtype=dtype,
                 rng=rng,
                 mesh=mesh,
-                # TODO (jacobplatin): we should refactor this to pass a dtype (or config) directly
-                kv_cache_dtype=vllm_config.cache_config.cache_dtype))
+                kv_cache_dtype=get_layer_kv_cache_dtype(i),
+                layer_idx=i))
         if self.is_last_rank:
             self.norm = nnx.RMSNorm(
                 hidden_size,

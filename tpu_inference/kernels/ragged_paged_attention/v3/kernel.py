@@ -64,17 +64,14 @@ class RpaCase(Enum):
 
 
 def ref_ragged_paged_attention(
-    queries: jax.
-    Array,  # [max_num_tokens, actual_num_q_heads, actual_head_dim]
-    keys: jax.Array,  # [max_num_tokens, actual_num_kv_heads, actual_head_dim]
-    values: jax.
-    Array,  # [max_num_tokens, actual_num_kv_heads, actual_head_dim]
-    kv_cache: jax.
-    Array,  # [total_num_pages, page_size, num_kv_heads_x2 // kv_packing, kv_packing, head_dim]
-    kv_lens: jax.Array,  # i32[max_num_seqs]
-    page_indices: jax.Array,  # i32[max_num_seqs * pages_per_seq]
-    cu_q_lens: jax.Array,  # i32[max_num_seqs + 1]
-    distribution: jax.Array,  # i32[3]
+    queries: jax.Array,
+    keys: jax.Array,
+    values: jax.Array,
+    kv_cache: jax.Array,
+    kv_lens: jax.Array,
+    page_indices: jax.Array,
+    cu_q_lens: jax.Array,
+    distribution: jax.Array,
     *,
     use_causal_mask: bool = True,
     skip_kv_mask: bool = False,
@@ -86,6 +83,7 @@ def ref_ragged_paged_attention(
     q_scale: float | None = None,
     k_scale: float | None = None,
     v_scale: float | None = None,
+    tq_centroids: jax.Array | None = None,
 ):
     if out_dtype is None:
         out_dtype = jnp.float32 if queries.dtype == jnp.float32 else jnp.bfloat16
@@ -159,8 +157,27 @@ def ref_ragged_paged_attention(
             -1, num_kv_heads_x2,
             head_dim)[:, :actual_num_kv_heads * 2, :].reshape(
                 -1, actual_num_kv_heads, head_dim * 2)
-        k = kv[:kv_len, :, :head_dim][:, :, :actual_head_dim]
-        v = kv[:kv_len, :, head_dim:][:, :, :actual_head_dim]
+
+        if tq_centroids is not None:
+            # TurboQuant Dequantization
+            # kv: (total_tokens_in_seq, Hk, D_packed*2)
+            k_packed = kv[:, :, :head_dim]
+            v_packed = kv[:, :, head_dim:]
+
+            # Unpack two 4-bit indices from each uint8
+            idx0 = k_packed & 0x0F
+            idx1 = (k_packed >> 4) & 0x0F
+            # head_dim in cache is packed, we need to map back to actual_head_dim
+            # This is a simplified draft of the mapping
+            idx = jnp.stack([idx0, idx1], axis=-1).reshape(k_packed.shape[:-1] + (-1,))
+            k = tq_centroids[idx[..., :actual_head_dim]]
+
+            # v dequant (placeholder for uniform quantization)
+            v = v_packed.astype(jnp.float32)
+        else:
+            k = kv[:kv_len, :, :head_dim][:, :, :actual_head_dim]
+            v = kv[:kv_len, :, head_dim:][:, :, :actual_head_dim]
+
         k = jnp.repeat(k, actual_num_q_heads_per_kv_head, axis=1)
         v = jnp.repeat(v, actual_num_q_heads_per_kv_head, axis=1)
 
@@ -290,48 +307,72 @@ def _ragged_paged_attention_kernel(*args, **kwargs):
 
 def _ragged_paged_attention_kernel_loop(
     seq_idx,
+    *args,
+    **kwargs,
+):
     # Prefetch
-    kv_lens_ref,  # [max_num_seqs]
-    page_indices_ref,  # [max_num_seqs * pages_per_seq]
-    cu_q_lens_ref,  # [max_num_seqs + 1]
-    # TODO(jevinjiang): merge these into one so we can save SMEM.
-    distribution_ref,  # [3] (decode_end, prefill_end, mixed_end)
-    sem_ids_ref,  # [3] (bq_sem_idx, bkv_sem_idx, bo_sem_idx)
-    bo_ids_ref,  # [4] (bo_sem_0_seq_idx, bo_sem_1_seq_idx, bo_sem_0_bo_idx, bo_sem_1_bo_idx)
-    bkv_update_ids_ref,  # [6] (bkv_sem_0_seq_idx, bkv_sem_1_seq_idx, bkv_sem_0_offset, bkv_sem_1_offset, bkv_sem_0_sz, bkv_sem_1_sz)
-    # Input
-    q_hbm_ref,  # [actual_num_kv_heads, max_num_tokens, num_q_heads_per_kv_head // q_packing, q_packing, head_dim]
-    kv_hbm_ref,  # [max_num_tokens, num_kv_heads_x2 // kv_packing, kv_packing, head_dim]
-    kv_cache_hbm_ref,  # [total_num_pages, page_size, num_kv_heads_x2 // kv_packing, kv_packing, head_dim]
-    # Output
-    o_hbm_ref,  # [actual_num_kv_heads, max_num_tokens, num_q_heads_per_kv_head // q_packing, q_packing, head_dim]
-    updated_kv_cache_hbm_ref,  # [total_num_pages, page_size, num_kv_heads_x2 // kv_packing, kv_packing, head_dim]
-    # Scratch
-    ## Add one extra to handle bank conflicts for strided load if needed.
-    bkv_x2_ref,  # [2, bkv_sz, num_kv_heads_x2 // kv_packing (+ 1), kv_packing, head_dim]
-    bq_x2_ref,  # [2, actual_num_kv_heads, bq_sz, num_q_heads_per_kv_head // q_packing, q_packing, head_dim]
-    bo_x2_ref,  # [2, actual_num_kv_heads, bq_sz, num_q_heads_per_kv_head // q_packing, q_packing, head_dim]
-    sems,  # [4, 2]
-    l_ref,  # [actual_num_kv_heads, bq_sz * num_q_heads_per_kv_head, 128],
-    m_ref,  # [actual_num_kv_heads, bq_sz * num_q_heads_per_kv_head, 128],
-    acc_ref,  # [actual_num_kv_heads, bq_sz * num_q_heads_per_kv_head, head_dim],
-    *,
-    use_causal_mask: bool = True,
-    skip_kv_mask: bool = False,
-    sm_scale: float,
-    sliding_window: int | None = None,
-    soft_cap: float | None = None,
-    mask_value: float | None = None,
-    q_scale: float | None = None,
-    k_scale: float | None = None,
-    v_scale: float | None = None,
-    static_q_len: int | None = None,
-    bq_sz,  # bq fetch size
-    bkv_sz,  # bkv prefetch size
-    bq_csz,  # bq compute size
-    bkv_csz,  # bkv compute size
-    case: RpaCase = RpaCase.MIXED,
-    debug_mode: bool = False,
+    (
+        kv_lens_ref,
+        page_indices_ref,
+        cu_q_lens_ref,
+        distribution_ref,
+        sem_ids_ref,
+        bo_ids_ref,
+        bkv_update_ids_ref,
+    ) = args[:7]
+
+    # Handle optional tq_centroids
+    # Standard: 7 prefetches + 3 inputs + 2 outputs + 7 scratch = 19
+    # TQ: 7 prefetches + 4 inputs + 2 outputs + 7 scratch = 20
+    if len(args) == 20:
+        (
+            q_hbm_ref,
+            kv_hbm_ref,
+            kv_cache_hbm_ref,
+            tq_centroids_ref,
+            o_hbm_ref,
+            updated_kv_cache_hbm_ref,
+            bkv_x2_ref,
+            bq_x2_ref,
+            bo_x2_ref,
+            sems,
+            l_ref,
+            m_ref,
+            acc_ref,
+        ) = args[7:]
+    else:
+        (
+            q_hbm_ref,
+            kv_hbm_ref,
+            kv_cache_hbm_ref,
+            o_hbm_ref,
+            updated_kv_cache_hbm_ref,
+            bkv_x2_ref,
+            bq_x2_ref,
+            bo_x2_ref,
+            sems,
+            l_ref,
+            m_ref,
+            acc_ref,
+        ) = args[7:]
+        tq_centroids_ref = None
+
+    use_causal_mask = kwargs.get("use_causal_mask", True)
+    skip_kv_mask = kwargs.get("skip_kv_mask", False)
+    sm_scale = kwargs.get("sm_scale")
+    sliding_window = kwargs.get("sliding_window")
+    soft_cap = kwargs.get("soft_cap")
+    mask_value = kwargs.get("mask_value")
+    q_scale = kwargs.get("q_scale")
+    k_scale = kwargs.get("k_scale")
+    v_scale = kwargs.get("v_scale")
+    static_q_len = kwargs.get("static_q_len")
+    bq_sz = kwargs.get("bq_sz")
+    bkv_sz = kwargs.get("bkv_sz")
+    bq_csz = kwargs.get("bq_csz")
+    bkv_csz = kwargs.get("bkv_csz")
+    case = kwargs.get("case", RpaCase.MIXED)
+    debug_mode = kwargs.get("debug_mode", False)
 ):
     assert q_hbm_ref.shape == o_hbm_ref.shape
     assert q_hbm_ref.shape[-1] == kv_cache_hbm_ref.shape[-1]
@@ -1566,17 +1607,15 @@ def get_default_block_sizes(
     donate_argnames=("queries", "keys", "values", "kv_cache"),
 )
 def ragged_paged_attention(
-    queries: jax.
-    Array,  # [max_num_tokens, actual_num_q_heads, actual_head_dim]
-    keys: jax.Array,  # [max_num_tokens, actual_num_kv_heads, actual_head_dim]
-    values: jax.
-    Array,  # [max_num_tokens, actual_num_kv_heads, actual_head_dim]
-    kv_cache: jax.
-    Array,  # [total_num_pages, page_size, num_kv_heads_x2 // kv_packing, kv_packing, head_dim]
-    kv_lens: jax.Array,  # i32[max_num_seqs]
-    page_indices: jax.Array,  # i32[max_num_seqs * pages_per_seq]
-    cu_q_lens: jax.Array,  # i32[max_num_seqs + 1]
-    distribution: jax.Array,  # i32[3]
+    queries: jax.Array,
+    keys: jax.Array,
+    values: jax.Array,
+    kv_cache: jax.Array,
+    kv_lens: jax.Array,
+    page_indices: jax.Array,
+    cu_q_lens: jax.Array,
+    distribution: jax.Array,
+    tq_centroids: jax.Array | None = None,
     *,
     use_causal_mask: bool = True,
     skip_kv_mask: bool = False,
@@ -1730,6 +1769,8 @@ def ragged_paged_attention(
             pl.BlockSpec(memory_space=pltpu.HBM),
             pl.BlockSpec(memory_space=pltpu.HBM),
         ]
+        if tq_centroids is not None:
+            in_specs.append(pl.BlockSpec(memory_space=pltpu.HBM))
 
         out_specs = [
             pl.BlockSpec(memory_space=pltpu.HBM),
@@ -1846,19 +1887,25 @@ def ragged_paged_attention(
         if tpu_version >= 7:
             # jit to color the memory since the q, kv are just preprocessed.
             @jax.jit
-            def run(scalar_prefetches, q, kv, kv_cache):
-                return kernel(
+            def run(scalar_prefetches, q, kv, kv_cache, tq_centroids):
+                args = [
                     *scalar_prefetches,
                     pltpu.with_memory_space_constraint(q, pltpu.HBM),
                     pltpu.with_memory_space_constraint(kv, pltpu.HBM),
                     pltpu.with_memory_space_constraint(kv_cache, pltpu.HBM),
-                )
+                ]
+                if tq_centroids is not None:
+                    args.append(pltpu.with_memory_space_constraint(tq_centroids, pltpu.HBM))
+                return kernel(*args)
         else:
             # TODO(b/494285697): v6 has issues with pinning aliased memory.
-            def run(scalar_prefetches, q, kv, kv_cache):
-                return kernel(*scalar_prefetches, q, kv, kv_cache)
+            def run(scalar_prefetches, q, kv, kv_cache, tq_centroids):
+                args = [*scalar_prefetches, q, kv, kv_cache]
+                if tq_centroids is not None:
+                    args.append(tq_centroids)
+                return kernel(*args)
 
-        return run(scalar_prefetches, q, kv, kv_cache)
+        return run(scalar_prefetches, q, kv, kv_cache, tq_centroids)
 
     def _prepare_block_sizes(block_sizes, case):
         if block_sizes is None:
