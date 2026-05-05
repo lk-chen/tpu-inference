@@ -1058,6 +1058,7 @@ class CompilationManager:
             self._run_compilation(
                 "structured_decode",
                 self.runner.structured_decoding_manager.structured_decode_fn,
+                self.runner.structured_decoding_manager,
                 dummy_require_struct_decoding,
                 dummy_grammar_bitmask,
                 dummy_logits,
