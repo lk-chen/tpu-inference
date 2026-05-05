@@ -65,6 +65,7 @@ fi
 
 IMAGE_NAME='vllm-tpu'
 FULL_IMAGE_TAG="${IMAGE_NAME}:${BUILDKITE_COMMIT}"
+HEAD_IMAGE_TAG="vllm/vllm-tpu:nightly"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 # Source the environment setup script
 # shellcheck disable=SC1091
@@ -101,12 +102,12 @@ mkdir -p "$KERNEL_TUNING_TMP_DIR"
 # Some test scripts set tp=2 on TPU_VERSION=tpu7x to mitigate test failures.
 # TODO (Qiliang Cui) Investigate why tensor-parallel-size=1 breaks in tpu7x.
 
+  # -v "$LOCAL_HF_HOME":"$DOCKER_HF_HOME" \
 exec docker run \
   --privileged \
   --net host \
   --shm-size=16G \
   --rm \
-  # -v "$LOCAL_HF_HOME":"$DOCKER_HF_HOME" \
   -v "$KERNEL_TUNING_TMP_DIR":"$KERNEL_TUNING_TMP_DIR" \
   "${ENV_VARS[@]}" \
   "${TEST_SUITE_VARS[@]}" \
