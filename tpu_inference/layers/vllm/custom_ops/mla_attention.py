@@ -77,10 +77,10 @@ class VllmMLAAttention(MLAAttention):
 
             # NOTE: vLLM dequantizes kv_b_proj weights which causes more memory
             # usage than expected.
-            if hasattr(self.kv_b_proj, "scheme"):
-                mesh = self.kv_b_proj.scheme.linear_config.mesh
-            elif hasattr(self.kv_b_proj.quant_method, "linear_config"):
+            if hasattr(self.kv_b_proj.quant_method, "linear_config"):
                 mesh = self.kv_b_proj.quant_method.linear_config.mesh
+            elif hasattr(self.kv_b_proj, "scheme"):
+                mesh = self.kv_b_proj.scheme.linear_config.mesh
             else:
                 raise ValueError(
                     f"Cannot find linear_config for kv_b_proj {self.kv_b_proj}"

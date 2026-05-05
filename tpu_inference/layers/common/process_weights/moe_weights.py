@@ -191,6 +191,9 @@ def process_w13_for_gmm(tensor,
     padded_w1 = _pad_tensor(w1)
     padded_w3 = _pad_tensor(w3)
 
+    logger.info(f"{name}_w1 shape after padding: {padded_w1.shape}")
+    logger.info(f"{name}_w3 shape after padding: {padded_w3.shape}")
+
     # 3. Concatenate and Reorder for avoiding TP sharding comms
     w13_concat = jnp.concatenate([padded_w1, padded_w3], axis=concat_dim)
     if padded_output_sizes is not None:
@@ -401,9 +404,9 @@ def process_moe_weights(
             )
 
     if w13_weight_scale is not None:
-        w13_weight_scale = jnp.array(w13_weight_scale, copy=True)
+        w13_weight_scale = jnp.array(w13_weight_scale)
     if w2_weight_scale is not None:
-        w2_weight_scale = jnp.array(w2_weight_scale, copy=True)
+        w2_weight_scale = jnp.array(w2_weight_scale)
 
     return FusedMoEWeights(
         w13_weight=w13_weight,
@@ -527,7 +530,7 @@ def process_fp8_moe_weights(
                               if requant_block_size_from_env else None)
 
     moe_logging_str = (
-        f"[MoE requantization]: re-quantizing MoE weights {w13_weight.shape} to {desired_quant_dtype}"
+        f"[MoE requantization]: re-quantizing MoE weights to {desired_quant_dtype}"
     )
     if requant_block_size is not None:
         moe_logging_str += f" with block size {requant_block_size}"
@@ -535,7 +538,6 @@ def process_fp8_moe_weights(
         moe_logging_str += f" | sharding: {w13_weight.sharding}"
     logger.info(moe_logging_str)
 
-    jax.debug.print("[Execution] Starting dequantization")
     # Dequantize fp8 2d block quantized weights into fp32.
     w13_weight = dequantize_tensor(w13_weight,
                                    w13_weight_scale, (1, 2),
@@ -549,7 +551,6 @@ def process_fp8_moe_weights(
     w13_interleave = activation == "swigluoai"
     w13_reorder_size = get_mesh_shape_product(mesh,
                                               ShardingAxisName.MLP_TENSOR)
-    jax.debug.print("[Execution] Starting quantization")
     weights = quantize_moe_weights(
         FusedMoEWeights(
             w13_weight=w13_weight,
@@ -562,8 +563,6 @@ def process_fp8_moe_weights(
         desired_quant_dtype,
         requant_block_size,
     )
-    jax.debug.print(
-        "[Execution] Starting process_moe_weights (reordering/padding)")
     return process_moe_weights(
         weights,
         moe_backend=moe_backend,

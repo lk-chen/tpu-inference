@@ -341,6 +341,22 @@ def device_array(mesh: Mesh, *args, sharding=None, **kwargs) -> jax.Array:
     return general_device_put(*args, sharding=sharding, **kwargs)
 
 
+def replicate_multihost_array(arr: jax.Array) -> jax.Array:
+    """Replicate an array across all hosts if it is not fully addressable.
+
+    This is necessary to avoid multi-host fetching errors during operations
+    that require host-side evaluation of the array (e.g., boolean indexing).
+    """
+    if hasattr(arr, "is_fully_addressable") and not arr.is_fully_addressable:
+        from jax.sharding import NamedSharding, PartitionSpec
+        if hasattr(arr, "sharding") and arr.sharding is not None:
+            mesh = getattr(arr.sharding, "mesh", None)
+            if mesh is not None:
+                return jax.device_put(arr,
+                                      NamedSharding(mesh, PartitionSpec()))
+    return arr
+
+
 def get_hash_fn_by_name(hash_fn_name: str) -> Callable[[Any], bytes]:
     """
     A wrapper function of vllm.utils.hashing.get_hash_fn_by_name to support builtin

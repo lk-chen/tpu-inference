@@ -111,8 +111,9 @@ def vllm_vit_sdpa(
     key = jnp.swapaxes(key, 1, 2)
     value = jnp.swapaxes(value, 1, 2)
 
-    if scale is None:
-        scale = 1.0 / math.sqrt(query.shape[-1])
+    # For ViT models, vLLM typically handles scaling before calling this op.
+    # Setting scale to 1.0 for consistency with upstream.
+    scale = 1.0
 
     mesh = jax.sharding.get_abstract_mesh()
 

@@ -44,7 +44,7 @@ from vllm.v1.pool.metadata import PoolingMetadata
 from vllm.v1.worker.gpu.spec_decode.eagle.eagle3_utils import \
     set_eagle3_aux_hidden_state_layers
 
-from tpu_inference import envs
+from tpu_inference import envs, utils
 from tpu_inference.distributed.jax_parallel_state import \
     get_pp_group as jax_get_pp_group
 from tpu_inference.layers.common.attention_metadata import AttentionMetadata
@@ -456,20 +456,11 @@ class VllmModelWrapper:
                         torch_mm_embeds = torch_view(mm_embeds)
                     assert is_multimodal is not None
                     # Replicate is_multimodal to avoid multi-host fetching errors during boolean indexing
-                    if hasattr(is_multimodal, "is_fully_addressable"
-                               ) and not is_multimodal.is_fully_addressable:
-                        from jax.sharding import NamedSharding, PartitionSpec
-                        if hasattr(is_multimodal, "sharding"
-                                   ) and is_multimodal.sharding is not None:
-                            mesh = getattr(is_multimodal.sharding, "mesh",
-                                           None)
-                            if mesh is not None:
-                                import jax
-                                is_multimodal = jax.device_put(
-                                    is_multimodal,
-                                    NamedSharding(mesh, PartitionSpec()))
+                    is_multimodal = utils.replicate_multihost_array(
+                        is_multimodal)
 
                     torch_mm_embeds = torch_mm_embeds[is_multimodal]
+
                     call_args = (torch_view(input_ids), torch_mm_embeds)
                 else:
                     call_args = (torch_view(input_ids), )

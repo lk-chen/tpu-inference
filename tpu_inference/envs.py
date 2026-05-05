@@ -281,6 +281,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # kv offload to dram: prometheus metrics log interval in seconds
     "TPU_OFFLOAD_METRICS_LOG_INTERVAL":
     lambda: int(os.getenv("TPU_OFFLOAD_METRICS_LOG_INTERVAL", "10")),
+    # Fraction of VMEM capacity to use for GMM kernel vmem limits
+    "GMM_VMEM_LIMIT_FRAC":
+    lambda: float(os.getenv("GMM_VMEM_LIMIT_FRAC", "0.9")),
 }
 
 

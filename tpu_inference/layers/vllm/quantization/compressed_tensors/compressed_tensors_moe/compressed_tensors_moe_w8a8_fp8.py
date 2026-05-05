@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import jax
 import torch
 from compressed_tensors.quantization import QuantizationArgs
 from jax.sharding import Mesh
@@ -105,12 +104,8 @@ class VllmCompressedTensorsW8A8Fp8MoEMethod(CompressedTensorsW8A8Fp8MoEMethod,
             w2_bias=w2_bias,
         )
 
-        # JIT the global processing function to run fast on TPU
-        _jitted_process = jax.jit(process_fp8_moe_weights,
-                                  static_argnames=("moe_backend", "mesh",
-                                                   "activation",
-                                                   "weight_block_size"))
-        weights = _jitted_process(
+        # Process the weights using the global processing function
+        weights = process_fp8_moe_weights(
             input_weights,
             moe_backend=self.moe_backend,
             mesh=self.mesh,
