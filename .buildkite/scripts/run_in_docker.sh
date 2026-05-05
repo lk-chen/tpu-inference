@@ -85,14 +85,14 @@ TEST_SUITE_VARS=(
 DOCKER_HF_HOME="/tmp/hf_home"
 
 # Try to cache HF models
-persist_cache_dir="/mnt/disks/persist/models"
+# persist_cache_dir="/mnt/disks/persist/models"
 
-if ( mkdir -p "$persist_cache_dir" ); then
-  LOCAL_HF_HOME="$persist_cache_dir"
-else
-  echo "Error: Failed to create $persist_cache_dir"
-  exit 1
-fi
+# if ( mkdir -p "$persist_cache_dir" ); then
+#   LOCAL_HF_HOME="$persist_cache_dir"
+# else
+#   echo "Error: Failed to create $persist_cache_dir"
+#   exit 1
+# fi
 
 # Temporary directory for kernel tuning outputs (not persisted)
 KERNEL_TUNING_TMP_DIR="/tmp/kernel_tuning"
@@ -106,6 +106,7 @@ exec docker run \
   --net host \
   --shm-size=16G \
   --rm \
+  # -v "$LOCAL_HF_HOME":"$DOCKER_HF_HOME" \
   -v "$KERNEL_TUNING_TMP_DIR":"$KERNEL_TUNING_TMP_DIR" \
   "${ENV_VARS[@]}" \
   "${TEST_SUITE_VARS[@]}" \
