@@ -100,6 +100,7 @@ class CompilationManager:
                          **kwargs) -> None:
         logger.info(f"Precompile {name} --> {kwargs}")
         # Lowering (JAX tracing) must happen on the main thread.
+        fn = jax.jit(fn) if not hasattr(fn, 'lower') else fn
         lowered = fn.lower(*args, **call_kwargs)
 
         # Compilation is thread-safe
