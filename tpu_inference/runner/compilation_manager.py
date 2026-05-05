@@ -94,8 +94,7 @@ class CompilationManager:
         if only_equal:
             return inner_val != outer_val
         return inner_val > outer_val
-    
-    
+
     def _run_compilation(self,
                          name: str,
                          fn: Callable,
@@ -103,9 +102,9 @@ class CompilationManager:
                          call_kwargs=dict(),
                          **kwargs) -> None:
         logger.info(f"Precompile {name} --> {kwargs}")
-        lowerable = fn if hasattr(fn, 'lower') else jax.jit(fn)
+        # lowerable = fn if hasattr(fn, 'lower') else jax.jit(fn)
         # Lowering (JAX tracing) must happen on the main thread.
-        lowered = lowerable.lower(*args, **call_kwargs)
+        lowered = fn.lower(*args, **call_kwargs)
         # Compilation is thread-safe: submit to pool so multiple shapes compile
         # in parallel.
         def _compile(lowered, name):
