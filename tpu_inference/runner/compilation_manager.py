@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import time
+from concurrent.futures import ThreadPoolExecutor, Future
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 import jax
@@ -31,7 +32,7 @@ from tpu_inference.layers.jax.sample.sampling_metadata import \
 from tpu_inference.logger import init_logger
 from tpu_inference.models.jax.jax_intermediate_tensor import \
     JaxIntermediateTensors
-from tpu_inference.utils import device_array, to_jax_dtype
+from tpu_inference.utils import device_array, time_function, to_jax_dtype
 
 if TYPE_CHECKING:
     from tpu_inference.runner.tpu_runner import TPUModelRunner
@@ -58,6 +59,13 @@ class CompilationManager:
                                   -1)
                 jax.config.update("jax_persistent_cache_min_compile_time_secs",
                                   -1)
+        # Thread pool for parallel XLA compilation. JAX tracing (lowering) must
+        # remain on the main thread (not thread-safe), but compile() is
+        # thread-safe and dominates wall-clock time, so we parallelise that.
+        self._compile_executor = ThreadPoolExecutor(
+            thread_name_prefix="xla_compile")
+        self._compile_futures: list[Future] = []
+
 
     def _create_dummy_tensor(self,
                              shape: Tuple[int, ...],
@@ -86,7 +94,8 @@ class CompilationManager:
         if only_equal:
             return inner_val != outer_val
         return inner_val > outer_val
-
+    
+    
     def _run_compilation(self,
                          name: str,
                          fn: Callable,
@@ -94,12 +103,39 @@ class CompilationManager:
                          call_kwargs=dict(),
                          **kwargs) -> None:
         logger.info(f"Precompile {name} --> {kwargs}")
-        start = time.perf_counter()
-        result = fn(*args, **call_kwargs)
-        jax.tree.map(lambda r: r.block_until_ready(), result)
-        end = time.perf_counter()
-        logger.info("Compilation finished in %.2f [secs].", end - start)
+        lowerable = fn if hasattr(fn, 'lower') else jax.jit(fn)
+        # Lowering (JAX tracing) must happen on the main thread.
+        lowered = lowerable.lower(*args, **call_kwargs)
+        # Compilation is thread-safe: submit to pool so multiple shapes compile
+        # in parallel.
+        def _compile(lowered, name):
+            start = time.perf_counter()
+            lowered.compile()
+            elapsed = time.perf_counter() - start
+            logger.info("Compilation of %s finished in %.2f [secs].", name,
+                        elapsed)
 
+        future = self._compile_executor.submit(_compile, lowered, name)
+        self._compile_futures.append(future)
+
+    def _wait_for_compilations(self) -> None:
+        """Block until all pending background compilations have finished.
+
+        Raises the first exception encountered, if any.
+        """
+        errors = []
+        for fut in self._compile_futures:
+            try:
+                fut.result()
+            except Exception as e:  # pylint: disable=broad-except
+                errors.append(e)
+        self._compile_futures.clear()
+        if errors:
+            raise RuntimeError(
+                f"{len(errors)} compilation(s) failed. "
+                f"First error: {errors[0]}") from errors[0]
+
+    @time_function
     def capture_model(self) -> None:
         if envs.SKIP_JAX_PRECOMPILE or self.runner.model_config.enforce_eager:
             return
@@ -135,6 +171,7 @@ class CompilationManager:
             if self.runner.speculative_config:
                 self._precompile_speculative_decoding()
 
+        self._wait_for_compilations()
         elapsed = time.perf_counter() - compilation_start_time
         self.runner.vllm_config.compilation_config.compilation_time += elapsed
 
@@ -283,13 +320,13 @@ class CompilationManager:
             lora_metadata = self.runner.lora_utils.extract_lora_metadata()
             self._run_compilation(
                 name,
-                model_fn_wrapper,
+                self.runner.model_fn,
                 self.runner.state,
                 self.runner.kv_caches,
                 input_ids,
                 attention_metadata,
-                positions,
                 inputs_embeds,
+                positions,
                 tuple(self.runner.layer_name_to_kvcache_index.items()),
                 lora_metadata,
                 intermediate_tensors,
@@ -343,7 +380,7 @@ class CompilationManager:
                     num_tokens=num_tokens,
                     num_reqs=num_reqs,
                 )
-
+    @time_function
     def _precompile_backbone_text_only(self) -> None:
         hidden_size = self.runner.model_config.get_hidden_size()
         for num_tokens in self.runner.num_tokens_paddings:
@@ -480,7 +517,9 @@ class CompilationManager:
 
                 self._run_compilation(
                     f"select_from_array [{name}]",
-                    self.runner._select_from_array_fn, input_tensor,
+                    self.runner._select_from_array_fn,
+                    self.runner,
+                    input_tensor,
                     indices_to_select, **{
                         "array_size": array_size,
                         "index_size": indices_count
