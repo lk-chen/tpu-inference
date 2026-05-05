@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 import jax
@@ -59,13 +59,10 @@ class CompilationManager:
                                   -1)
                 jax.config.update("jax_persistent_cache_min_compile_time_secs",
                                   -1)
-        # Thread pool for parallel XLA compilation. JAX tracing (lowering) must
-        # remain on the main thread (not thread-safe), but compile() is
-        # thread-safe and dominates wall-clock time, so we parallelise that.
+        # Thread pool for parallel XLA compilation.
         self._compile_executor = ThreadPoolExecutor(
-            thread_name_prefix="xla_compile")
+            thread_name_prefix="precompilation")
         self._compile_futures: list[Future] = []
-
 
     def _create_dummy_tensor(self,
                              shape: Tuple[int, ...],
@@ -102,11 +99,10 @@ class CompilationManager:
                          call_kwargs=dict(),
                          **kwargs) -> None:
         logger.info(f"Precompile {name} --> {kwargs}")
-        # lowerable = fn if hasattr(fn, 'lower') else jax.jit(fn)
         # Lowering (JAX tracing) must happen on the main thread.
         lowered = fn.lower(*args, **call_kwargs)
-        # Compilation is thread-safe: submit to pool so multiple shapes compile
-        # in parallel.
+
+        # Compilation is thread-safe
         def _compile(lowered, name):
             start = time.perf_counter()
             lowered.compile()
@@ -119,20 +115,13 @@ class CompilationManager:
 
     def _wait_for_compilations(self) -> None:
         """Block until all pending background compilations have finished.
-
-        Raises the first exception encountered, if any.
         """
-        errors = []
         for fut in self._compile_futures:
             try:
                 fut.result()
-            except Exception as e:  # pylint: disable=broad-except
-                errors.append(e)
-        self._compile_futures.clear()
-        if errors:
-            raise RuntimeError(
-                f"{len(errors)} compilation(s) failed. "
-                f"First error: {errors[0]}") from errors[0]
+            except Exception as e:
+                raise RuntimeError(f"Compilation(s) failed. "
+                                   f"First error: {e}")
 
     @time_function
     def capture_model(self) -> None:
@@ -379,7 +368,7 @@ class CompilationManager:
                     num_tokens=num_tokens,
                     num_reqs=num_reqs,
                 )
-    @time_function
+
     def _precompile_backbone_text_only(self) -> None:
         hidden_size = self.runner.model_config.get_hidden_size()
         for num_tokens in self.runner.num_tokens_paddings:
@@ -516,10 +505,8 @@ class CompilationManager:
 
                 self._run_compilation(
                     f"select_from_array [{name}]",
-                    self.runner._select_from_array_fn,
-                    self.runner,
-                    input_tensor,
-                    indices_to_select, **{
+                    self.runner._select_from_array_fn, self.runner,
+                    input_tensor, indices_to_select, **{
                         "array_size": array_size,
                         "index_size": indices_count
                     })
