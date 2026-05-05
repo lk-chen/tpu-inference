@@ -109,6 +109,7 @@ class TpuPlatform(Platform):
         "MOE_REQUANTIZE_WEIGHT_DTYPE",
         "USE_JAX_PROFILER_SERVER",
         "JAX_PROFILER_SERVER_PORT",
+        "GMM_VMEM_LIMIT_FRAC",
     ]
 
     @classmethod
