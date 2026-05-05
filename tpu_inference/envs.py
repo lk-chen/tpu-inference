@@ -281,6 +281,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # kv offload to dram: prometheus metrics log interval in seconds
     "TPU_OFFLOAD_METRICS_LOG_INTERVAL":
     lambda: int(os.getenv("TPU_OFFLOAD_METRICS_LOG_INTERVAL", "10")),
+    "DISABLE_WEIGHT_REQUANTIZATION":
+    env_bool("DISABLE_WEIGHT_REQUANTIZATION", default=False),
 }
 
 
