@@ -68,7 +68,11 @@ def create_benchmark_group(case_data,
 
     # Merge Environment Variables (Global + Case Specific)
     combined_env = {**global_env, **case_data.get("env", {})}
-    safe_key = clean_key_string(file_basename)
+
+    if is_single_case:
+        safe_key = clean_key_string(file_basename)
+    else:
+        safe_key = clean_key_string(f"{file_basename}-{case_name}")
 
     # Construct the Step dictionary
     child_steps = []
