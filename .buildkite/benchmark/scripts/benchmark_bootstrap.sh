@@ -41,7 +41,7 @@ upload_benchmark_pipeline() {
     echo "Using vllm-tpu commit hash: $(buildkite-agent meta-data get "CODE_HASH")"
 
     # Upload benchmark pipelines
-    local case_folder=".buildkite/benchmark/cases"
+    local case_folder=".buildkite/benchmark/cases/dev"
     local generator_script="${SCRIPT_DIR}/generate_bk_pipeline.py"
     process_json_benchmark_cases "$case_folder" "$generator_script" "$JOB_PRIORITY"
 }
