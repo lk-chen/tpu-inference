@@ -104,8 +104,13 @@ class VllmCompressedTensorsW8A8Fp8MoEMethod(CompressedTensorsW8A8Fp8MoEMethod,
             w2_bias=w2_bias,
         )
 
-        # Process the weights using the global processing function
-        weights = process_fp8_moe_weights(
+        # JIT the global processing function to run fast on TPU
+        import jax
+        _jitted_process = jax.jit(process_fp8_moe_weights,
+                                  static_argnames=("moe_backend", "mesh",
+                                                   "activation",
+                                                   "weight_block_size"))
+        weights = _jitted_process(
             input_weights,
             moe_backend=self.moe_backend,
             mesh=self.mesh,
