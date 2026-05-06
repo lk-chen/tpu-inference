@@ -12,6 +12,7 @@
         "tpu_v7x_8_queue"
       ],
       "env": {
+        "RUN_TYPE": "DAILY",
         "MODELTAG": "NEW",
         "EXPECTED_ETEL": 43200000,
         "INPUT_LEN": 2048,
@@ -62,6 +63,7 @@
         "tpu_v7x_2_queue"
       ],
       "env": {
+        "RUN_TYPE": "DAILY",
         "MODELTAG": "NEW",
         "EXPECTED_ETEL": 43200000,
         "INPUT_LEN": 1024,
@@ -112,6 +114,7 @@
         "tpu_v7x_2_queue"
       ],
       "env": {
+        "RUN_TYPE": "DAILY",
         "MODELTAG": "NEW",
         "EXPECTED_ETEL": 43200000,
         "INPUT_LEN": 8192,
@@ -162,6 +165,7 @@
         "tpu_v7x_8_queue"
       ],
       "env": {
+        "RUN_TYPE": "DAILY",
         "MODELTAG": "NEW",
         "EXPECTED_ETEL": 43200000,
         "INPUT_LEN": 1024,
@@ -213,6 +217,7 @@
         "tpu_v7x_8_queue"
       ],
       "env": {
+        "RUN_TYPE": "DAILY",
         "MODELTAG": "NEW",
         "EXPECTED_ETEL": 43200000,
         "INPUT_LEN": 8192,
